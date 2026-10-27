@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite
-from typing import TypedDict, override
+from typing import TypedDict, TypeGuard
 from uuid import UUID
 
 from baseop.uuid import AccountUUID, account_uuid
@@ -55,7 +55,7 @@ class InsufficientFundsError(Exception):
     pass
 
 
-def verify_strict_numeric(value: object) -> bool:
+def verify_strict_numeric(value: object) -> TypeGuard[int | float]:
     numeric = isinstance(value, (int, float))
     is_bool = isinstance(value, bool)
     if not numeric or is_bool:
@@ -75,10 +75,10 @@ class AbstractAccount(ABC):
         account_status: AccountStatus = AccountStatus.Active,
     ) -> None:
         self._account_id = account_id if account_id is not None else account_uuid()
-        if not isinstance(self._account_id, AccountUUID):
+        if not isinstance(self._account_id, AccountUUID):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError("Account id has invalid type")
 
-        if not isinstance(user, User):
+        if not isinstance(user, User):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError("User has invalid type")
         self._user = user
 
@@ -86,9 +86,9 @@ class AbstractAccount(ABC):
             raise ValueError("Balance must be valid number")
         if balance < 0:
             raise ValueError("Balance must be non negative")
-        self._balance = balance
+        self._balance = float(balance)
 
-        if not isinstance(account_status, AccountStatus):
+        if not isinstance(account_status, AccountStatus):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError("Account status has invalid type")
         self._account_status = account_status
 
@@ -98,7 +98,7 @@ class AbstractAccount(ABC):
         if self._account_status == AccountStatus.Frozen:
             raise AccountFrozenError("Account is frozen, operation denied.")
 
-    def _validate_amount_value(self, amount):
+    def _validate_amount_value(self, amount: object):
         if not verify_strict_numeric(amount):
             raise InvalidOperationError("Amount must be valid value.")
         if amount <= 0:
@@ -141,7 +141,7 @@ class BankAccount(AbstractAccount):
     ) -> None:
         super().__init__(user, account_id, balance, account_status)
 
-        if not isinstance(currency, AccountCurrency):
+        if not isinstance(currency, AccountCurrency):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError("Account currency has invalid type")
         self._currency = currency
 
@@ -151,10 +151,10 @@ class BankAccount(AbstractAccount):
 
         return f"""
         Account type: BankAccount
-        Client: {values["user"]}
+        Client: {values["user"].id}
         Last 4 dig.: {last_acc_digits}
-        Status: {values["account_status"]}
-        Balance: {values["balance"]} {values["currency"]}
+        Status: {values["account_status"].name}
+        Balance: {values["balance"]} {values["currency"].name}
         """
 
     @property

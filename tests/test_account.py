@@ -22,17 +22,17 @@ def user():
 
 
 @pytest.fixture
-def account(user ):
+def account(user: User):
     return BankAccount(user)
 
 
 @pytest.fixture
-def frozen_account(user):
+def frozen_account(user: User):
     return BankAccount(user, account_status=AccountStatus.Frozen)
 
 
 @pytest.fixture
-def closed_account(user):
+def closed_account(user: User):
     return BankAccount(user, account_status=AccountStatus.Closed)
 
 
@@ -155,19 +155,19 @@ def test_deposit(account: BankAccount):
         10**400,
     ],
 )
-def test_deposit_bad_amount(account: BankAccount, value):
+def test_deposit_wrong_amount_type(account: BankAccount, value: object):
     with pytest.raises(InvalidOperationError):
-        account.deposit(value)
+        account.deposit(value)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize("value", [1, 100.0])
-def test_deposit_good_amount(account: BankAccount, value):
+def test_deposit_good_amount_type(account: BankAccount, value: float):
     initial_value = account.balance
     account.deposit(value)
     assert account.balance == initial_value + value
 
 
-def test_withdraw(account: BankAccount):
+def test_withdraw_state(account: BankAccount):
     account.deposit(100.0)
     account.withdraw(50.0)
     assert account.balance == 50.0
@@ -199,14 +199,14 @@ def test_withdraw_below_balance(account: BankAccount):
         10**400,
     ],
 )
-def test_withdraw_bad_value(account: BankAccount, value):
+def test_withdraw_wrong_value_type(account: BankAccount, value: object):
     account.deposit(1000000)
     with pytest.raises(InvalidOperationError):
-        account.withdraw(value)
+        account.withdraw(value)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize("value", [1, 100.0])
-def test_withdraw_good_value(account: BankAccount, value):
+def test_withdraw_good_value_type(account: BankAccount, value: float):
     account.deposit(1000000)
     initial_value = account.balance
     account.withdraw(value)
@@ -214,32 +214,32 @@ def test_withdraw_good_value(account: BankAccount, value):
 
 
 @pytest.mark.parametrize("amount", [10**400, -(10**400)])
-def test_amount_unrepresentable_as_float(account, amount):
+def test_amount_unrepresentable_as_float(account: BankAccount, amount: float):
     with pytest.raises(InvalidOperationError):
         account.deposit(amount)
     assert account.balance == 0
 
 
-def test_balance_unrepresentable_as_float(user):
+def test_balance_unrepresentable_as_float(user: User):
     with pytest.raises(ValueError):
         BankAccount(user, balance=10**400)
 
 
-def test_sum_of_valid_ints_overflows(user):
+def test_sum_of_valid_ints_overflows(user: User):
     account = BankAccount(user, balance=10**308)
     with pytest.raises(InvalidOperationError):
         account.deposit(10**308)
     assert account.balance == 10**308
 
 
-def test_float_sum_overflows(account):
+def test_float_sum_overflows(account: BankAccount):
     account.deposit(1e308)
     with pytest.raises(InvalidOperationError):
         account.deposit(1e308)
     assert account.balance == 1e308
 
 
-def test_int_amount_against_float_balance(account):
+def test_int_amount_against_float_balance(account: BankAccount):
     account.deposit(1e308)
     with pytest.raises(InvalidOperationError):
         account.deposit(10**308)
