@@ -1,4 +1,4 @@
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -12,6 +12,7 @@ from baseop.account import (
     InvalidOperationError,
     User,
 )
+from baseop.uuid import AccountUUID
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def closed_account(user):
 
 
 def test_bank_account_init_with_uuid(account: AbstractAccount):
-    assert isinstance(account.account_id, UUID)
+    assert isinstance(account.account_id, AccountUUID)
 
 
 def test_bank_account_init_with_no_balance(account: AbstractAccount):

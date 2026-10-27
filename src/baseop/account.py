@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
-from uuid import UUID, uuid4
+from uuid import UUID
+
+from baseop.uuid import AccountUUID, accout_uuid
 
 
 @dataclass
@@ -40,27 +41,26 @@ class InsufficientFundsError(Exception):
     pass
 
 
-class AbstractAccount(Protocol):
-    account_id: UUID
+class AbstractAccount:
+    account_id: AccountUUID
     user: User
     balance: float
     account_status: AccountStatus
 
     def deposit(self, amount: float) -> None: ...
     def withdraw(self, amount: float) -> None: ...
-    def get_accoutn_info(self) -> str: ...
+    def get_account_info(self) -> str: ...
 
 
-class BankAccount:
+class BankAccount(AbstractAccount):
     def __init__(
         self,
         user: User,
-        account_id: UUID = uuid4(),
         balance: float = 0,
         account_status: AccountStatus = AccountStatus.Active,
         currency: AccountCurrency = AccountCurrency.RUB,
     ) -> None:
-        self.account_id = account_id
+        self.account_id = accout_uuid()
         self.user = user
         self.balance = balance
         self.account_status = account_status
@@ -104,5 +104,5 @@ class BankAccount:
 
         self.balance = remaining_balance
 
-    def get_accoutn_info(self) -> str:
+    def get_account_info(self) -> str:
         return f"account: {self.account_id};\nuser: {self.user};\nbalance: {self.balance}\n; status: {self.account_status}; currency: {self.currency}"
