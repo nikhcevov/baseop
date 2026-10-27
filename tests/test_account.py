@@ -13,7 +13,7 @@ from baseop.account import (
     InvalidOperationError,
     User,
 )
-from baseop.uuid import AccountUUID
+from baseop.uuid import AccountUUID, account_uuid
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def user():
 
 
 @pytest.fixture
-def account(user):
+def account(user ):
     return BankAccount(user)
 
 
@@ -36,8 +36,21 @@ def closed_account(user):
     return BankAccount(user, account_status=AccountStatus.Closed)
 
 
-def test_bank_account_init_with_uuid(account: BankAccount):
+def test_bank_account_init_with_random_uuid(user: User):
+    account = BankAccount(user)
     assert isinstance(account.account_id, AccountUUID)
+
+
+def test_bank_account_init_with_external_uuid(user: User):
+    account_id = account_uuid()
+    account = BankAccount(user, account_id)
+    assert account.account_id == account_id
+
+
+def test_bank_account_validates_external_uuid(user: User):
+    account_id = "123qwerty"
+    with pytest.raises(TypeError):
+        BankAccount(user, account_id)  # pyright: ignore[reportArgumentType]
 
 
 def test_bank_account_init_with_no_balance(account: BankAccount):
@@ -122,8 +135,9 @@ def test_deposit(account: BankAccount):
     assert account.balance == 300.0
 
 
-def test_deposit_validation(account: BankAccount):
-    bad_values = [
+@pytest.mark.parametrize(
+    "value",
+    [
         inf,
         -inf,
         nan,
@@ -138,16 +152,19 @@ def test_deposit_validation(account: BankAccount):
         {1},
         True,
         None,
-    ]
-    for value in bad_values:
-        with pytest.raises(InvalidOperationError):
-            account.deposit(value)
-
-    good_values = [1, 100.0]
-    for value in good_values:
-        initial_value = account.balance
+        10**400,
+    ],
+)
+def test_deposit_bad_amount(account: BankAccount, value):
+    with pytest.raises(InvalidOperationError):
         account.deposit(value)
-        assert account.balance == initial_value + value
+
+
+@pytest.mark.parametrize("value", [1, 100.0])
+def test_deposit_good_amount(account: BankAccount, value):
+    initial_value = account.balance
+    account.deposit(value)
+    assert account.balance == initial_value + value
 
 
 def test_withdraw(account: BankAccount):
@@ -162,9 +179,9 @@ def test_withdraw_below_balance(account: BankAccount):
         account.withdraw(200.0)
 
 
-def test_withdraw_validation(account: BankAccount):
-    account.deposit(1000000)
-    bad_values = [
+@pytest.mark.parametrize(
+    "value",
+    [
         inf,
         -inf,
         nan,
@@ -179,13 +196,51 @@ def test_withdraw_validation(account: BankAccount):
         {1},
         True,
         None,
-    ]
-    for value in bad_values:
-        with pytest.raises(InvalidOperationError):
-            account.withdraw(value)
-
-    good_values = [1, 100.0]
-    for value in good_values:
-        initial_value = account.balance
+        10**400,
+    ],
+)
+def test_withdraw_bad_value(account: BankAccount, value):
+    account.deposit(1000000)
+    with pytest.raises(InvalidOperationError):
         account.withdraw(value)
-        assert account.balance == initial_value - value
+
+
+@pytest.mark.parametrize("value", [1, 100.0])
+def test_withdraw_good_value(account: BankAccount, value):
+    account.deposit(1000000)
+    initial_value = account.balance
+    account.withdraw(value)
+    assert account.balance == initial_value - value
+
+
+@pytest.mark.parametrize("amount", [10**400, -(10**400)])
+def test_amount_unrepresentable_as_float(account, amount):
+    with pytest.raises(InvalidOperationError):
+        account.deposit(amount)
+    assert account.balance == 0
+
+
+def test_balance_unrepresentable_as_float(user):
+    with pytest.raises(ValueError):
+        BankAccount(user, balance=10**400)
+
+
+def test_sum_of_valid_ints_overflows(user):
+    account = BankAccount(user, balance=10**308)
+    with pytest.raises(InvalidOperationError):
+        account.deposit(10**308)
+    assert account.balance == 10**308
+
+
+def test_float_sum_overflows(account):
+    account.deposit(1e308)
+    with pytest.raises(InvalidOperationError):
+        account.deposit(1e308)
+    assert account.balance == 1e308
+
+
+def test_int_amount_against_float_balance(account):
+    account.deposit(1e308)
+    with pytest.raises(InvalidOperationError):
+        account.deposit(10**308)
+    assert account.balance == 1e308

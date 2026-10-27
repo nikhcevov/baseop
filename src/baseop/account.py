@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite
+from typing import TypedDict, override
 from uuid import UUID
 
 from baseop.uuid import AccountUUID, account_uuid
@@ -27,6 +28,17 @@ class AccountCurrency(Enum):
     CNY = 5
 
 
+class AccountInfo(TypedDict):
+    account_id: AccountUUID
+    account_status: AccountStatus
+    balance: float
+    user: User
+
+
+class BankAccountInfo(AccountInfo):
+    currency: AccountCurrency
+
+
 class AccountFrozenError(Exception):
     pass
 
@@ -43,7 +55,55 @@ class InsufficientFundsError(Exception):
     pass
 
 
+def verify_strict_numeric(value: object) -> bool:
+    numeric = isinstance(value, (int, float))
+    is_bool = isinstance(value, bool)
+    if not numeric or is_bool:
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
+
+
 class AbstractAccount(ABC):
+    def __init__(
+        self,
+        user: User,
+        account_id: AccountUUID | None = None,
+        balance: float = 0,
+        account_status: AccountStatus = AccountStatus.Active,
+    ) -> None:
+        self._account_id = account_id if account_id is not None else account_uuid()
+        if not isinstance(self._account_id, AccountUUID):
+            raise TypeError("Account id has invalid type")
+
+        if not isinstance(user, User):
+            raise TypeError("User has invalid type")
+        self._user = user
+
+        if not verify_strict_numeric(balance):
+            raise ValueError("Balance must be valid number")
+        if balance < 0:
+            raise ValueError("Balance must be non negative")
+        self._balance = balance
+
+        if not isinstance(account_status, AccountStatus):
+            raise TypeError("Account status has invalid type")
+        self._account_status = account_status
+
+    def _validate_account_status(self):
+        if self._account_status == AccountStatus.Closed:
+            raise AccountClosedError("Account is closed, operation denied.")
+        if self._account_status == AccountStatus.Frozen:
+            raise AccountFrozenError("Account is frozen, operation denied.")
+
+    def _validate_amount_value(self, amount):
+        if not verify_strict_numeric(amount):
+            raise InvalidOperationError("Amount must be valid value.")
+        if amount <= 0:
+            raise InvalidOperationError("Amount must be positive value.")
+
     @property
     @abstractmethod
     def account_id(self) -> AccountUUID: ...
@@ -67,55 +127,34 @@ class AbstractAccount(ABC):
     def withdraw(self, amount: float) -> None: ...
 
     @abstractmethod
-    def get_account_info(self) -> str: ...
-
-
-def verify_strict_numeric(value) -> bool:
-    numeric = isinstance(value, (int, float))
-    is_bool = isinstance(value, bool)
-    if numeric and not is_bool:
-        finite = isfinite(value)
-        return finite
-    return False
+    def get_account_info(self) -> AccountInfo: ...
 
 
 class BankAccount(AbstractAccount):
     def __init__(
         self,
         user: User,
+        account_id: AccountUUID | None = None,
         balance: float = 0,
         account_status: AccountStatus = AccountStatus.Active,
         currency: AccountCurrency = AccountCurrency.RUB,
     ) -> None:
-        self._account_id = account_uuid()
-
-        if not isinstance(user, User):
-            raise TypeError("User has invalid type")
-        self._user = user
-
-        if balance < 0:
-            raise ValueError("Balance must be non negative")
-        if not verify_strict_numeric(balance):
-            raise ValueError("Balance must be valid number")
-        self._balance = balance
-
-        if not isinstance(account_status, AccountStatus):
-            raise TypeError("Account status has invalid type")
-        self._account_status = account_status
+        super().__init__(user, account_id, balance, account_status)
 
         if not isinstance(currency, AccountCurrency):
             raise TypeError("Account currency has invalid type")
         self._currency = currency
 
     def __str__(self) -> str:
-        last_acc_digits = str(self._account_id)[-4:]
+        values = self.get_account_info()
+        last_acc_digits = str(values["account_id"])[-4:]
 
         return f"""
         Account type: BankAccount
-        Client: {self._user}
+        Client: {values["user"]}
         Last 4 dig.: {last_acc_digits}
-        Status: {self._account_status}
-        Balance: {self._balance} {self._currency}
+        Status: {values["account_status"]}
+        Balance: {values["balance"]} {values["currency"]}
         """
 
     @property
@@ -138,22 +177,19 @@ class BankAccount(AbstractAccount):
     def currency(self) -> AccountCurrency:
         return self._currency
 
-    def _validate_account_status(self):
-        if self._account_status == AccountStatus.Closed:
-            raise AccountClosedError("Account is closed, operation denied.")
-        if self._account_status == AccountStatus.Frozen:
-            raise AccountFrozenError("Account is frozen, operation denied.")
-
-    def _validate_amount_value(self, amount):
-        if not verify_strict_numeric(amount):
-            raise InvalidOperationError("Amount must be valid value.")
-        if amount <= 0:
-            raise InvalidOperationError("Amount must be positive value.")
-
     def deposit(self, amount: float) -> None:
         self._validate_account_status()
         self._validate_amount_value(amount)
-        self._balance += amount
+
+        try:
+            balance_after_deposit = float(self._balance) + float(amount)
+        except OverflowError:
+            raise InvalidOperationError("Resulting balance is too large")
+
+        if not isfinite(balance_after_deposit):
+            raise InvalidOperationError("Resulting balance is too large")
+
+        self._balance = balance_after_deposit
 
     def withdraw(self, amount: float) -> None:
         self._validate_account_status()
@@ -163,7 +199,13 @@ class BankAccount(AbstractAccount):
         if remaining_balance < 0:
             raise InsufficientFundsError("Withdrawal amount is larger than balance.")
 
-        self._balance = remaining_balance
+        self._balance = float(remaining_balance)
 
-    def get_account_info(self) -> str:
-        return f"account: {self._account_id};\nuser: {self._user};\nbalance: {self._balance}\n; status: {self._account_status}; currency: {self._currency}"
+    def get_account_info(self) -> BankAccountInfo:
+        return {
+            "account_id": self._account_id,
+            "account_status": self._account_status,
+            "balance": self._balance,
+            "currency": self._currency,
+            "user": self._user,
+        }
