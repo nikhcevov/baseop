@@ -8,6 +8,6 @@ class AccountUUID(str):
         return super().__new__(cls, value)
 
 
-def accout_uuid() -> AccountUUID:
+def account_uuid() -> AccountUUID:
     """Generate short UUID"""
     return AccountUUID(f"{uuid4()}"[:8])
