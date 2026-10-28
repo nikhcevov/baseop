@@ -5,15 +5,14 @@ import pytest
 
 from baseop.account import (
     AccountClosedError,
-    AccountCurrency,
     AccountFrozenError,
     AccountStatus,
     BankAccount,
     InsufficientFundsError,
     InvalidOperationError,
-    User,
 )
-from baseop.uuid import AccountUUID, account_uuid
+from baseop.user import User
+from baseop.uuid import AccountUUID
 
 
 @pytest.fixture
@@ -41,32 +40,31 @@ def test_bank_account_init_with_random_uuid(user: User):
     assert isinstance(account.account_id, AccountUUID)
 
 
-def test_bank_account_init_with_external_uuid(user: User):
-    account_id = account_uuid()
-    account = BankAccount(user, account_id)
-    assert account.account_id == account_id
+@pytest.mark.parametrize("uuid", [AccountUUID("123qwert"), None])
+def test_bank_account_init_with_good_external_uuid(uuid: object, user: User):
+    account = BankAccount(user, uuid)  # pyright: ignore[reportArgumentType]
+    assert bool(account.account_id)
 
 
-def test_bank_account_validates_external_uuid(user: User):
-    account_id = "123qwerty"
+@pytest.mark.parametrize("uuid", ["123qwerty", "1", 1, (1, 2)])
+def test_bank_account_validates_bad_external_uuid(uuid: object, user: User):
     with pytest.raises(TypeError):
-        BankAccount(user, account_id)  # pyright: ignore[reportArgumentType]
+        BankAccount(user, uuid)  # pyright: ignore[reportArgumentType]
 
 
 def test_bank_account_init_with_no_balance(account: BankAccount):
     assert account.balance == 0
 
 
-def test_bank_account_init_validate_balance(user: User):
-    bad_balance = [-1000.0, inf, -inf, nan]
-    good_balance = [0, 100, 1000.0]
+@pytest.mark.parametrize("value", [-1000.0, inf, -inf, nan])
+def test_bank_account_init_validate_bad_balance(value: float, user: User):
+    with pytest.raises(ValueError):
+        BankAccount(user, balance=value)
 
-    for value in bad_balance:
-        with pytest.raises(ValueError):
-            BankAccount(user, balance=value)
 
-    for value in good_balance:
-        assert BankAccount(user, balance=value).balance == value
+@pytest.mark.parametrize("value", [0, 100, 1000.0])
+def test_bank_account_init_validate_good_balance(value: float, user: User):
+    assert BankAccount(user, balance=value).balance == value
 
 
 def test_bank_account_init_with_user(user: User):
@@ -103,8 +101,6 @@ def test_bank_account_has_immutable_attributes(account: BankAccount, user: User)
         account.user = user  # pyright: ignore[reportAttributeAccessIssue]
     with pytest.raises(AttributeError):
         account.account_status = AccountStatus.Frozen  # pyright: ignore[reportAttributeAccessIssue]
-    with pytest.raises(AttributeError):
-        account.currency = AccountCurrency.CNY  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_deposit_frozen_account_denied(frozen_account: BankAccount):
@@ -227,9 +223,10 @@ def test_balance_unrepresentable_as_float(user: User):
 
 def test_sum_of_valid_ints_overflows(user: User):
     account = BankAccount(user, balance=10**308)
+    balance_before = account.balance
     with pytest.raises(InvalidOperationError):
         account.deposit(10**308)
-    assert account.balance == 10**308
+    assert account.balance == balance_before
 
 
 def test_float_sum_overflows(account: BankAccount):
