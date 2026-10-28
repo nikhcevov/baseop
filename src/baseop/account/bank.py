@@ -1,5 +1,4 @@
 from enum import Enum
-from math import isfinite
 
 from baseop.user import User
 from baseop.uuid import AccountUUID
@@ -8,8 +7,6 @@ from .base import (
     AbstractAccount,
     AccountInfo,
     AccountStatus,
-    InsufficientFundsError,
-    InvalidOperationError,
 )
 
 
@@ -56,35 +53,10 @@ class BankAccount(AbstractAccount):
     def currency(self) -> AccountCurrency:
         return self._currency
 
-    def deposit(self, amount: float) -> None:
-        self._validate_account_status()
-        self._validate_amount_value(amount)
-
-        try:
-            balance_after_deposit = float(self._balance) + float(amount)
-        except OverflowError:
-            raise InvalidOperationError("Resulting balance is too large")
-
-        if not isfinite(balance_after_deposit):
-            raise InvalidOperationError("Resulting balance is too large")
-
-        self._balance = balance_after_deposit
-
-    def withdraw(self, amount: float) -> None:
-        self._validate_account_status()
-        self._validate_amount_value(amount)
-
-        remaining_balance = self._balance - amount
-        if remaining_balance < 0:
-            raise InsufficientFundsError("Withdrawal amount is larger than balance.")
-
-        self._balance = float(remaining_balance)
-
     def get_account_info(self) -> BankAccountInfo:
+        base_values = super().get_account_info()
+
         return {
-            "account_id": self._account_id,
-            "account_status": self._account_status,
-            "balance": self._balance,
+            **base_values,
             "currency": self._currency,
-            "user": self._user,
         }

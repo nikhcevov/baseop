@@ -8,6 +8,7 @@ from .base import (
     InsufficientFundsError,
     InvalidOperationError,
 )
+from .savings import SavingsAccount, SavingsAccountInfo
 
 __all__ = [
     "AbstractAccount",
@@ -20,4 +21,6 @@ __all__ = [
     "BankAccountInfo",
     "InsufficientFundsError",
     "InvalidOperationError",
+    "SavingsAccount",
+    "SavingsAccountInfo",
 ]

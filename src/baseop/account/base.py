@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from enum import Enum
 from math import isfinite
 from typing import TypedDict, TypeGuard
@@ -101,11 +101,34 @@ class AbstractAccount(ABC):
     def account_status(self) -> AccountStatus:
         return self._account_status
 
-    @abstractmethod
-    def deposit(self, amount: float) -> None: ...
+    def deposit(self, amount: float) -> None:
+        self._validate_account_status()
+        self._validate_amount_value(amount)
 
-    @abstractmethod
-    def withdraw(self, amount: float) -> None: ...
+        try:
+            balance_after_deposit = float(self._balance) + float(amount)
+        except OverflowError:
+            raise InvalidOperationError("Resulting balance is too large")
 
-    @abstractmethod
-    def get_account_info(self) -> AccountInfo: ...
+        if not isfinite(balance_after_deposit):
+            raise InvalidOperationError("Resulting balance is too large")
+
+        self._balance = balance_after_deposit
+
+    def withdraw(self, amount: float) -> None:
+        self._validate_account_status()
+        self._validate_amount_value(amount)
+
+        remaining_balance = self._balance - amount
+        if remaining_balance < 0:
+            raise InsufficientFundsError("Withdrawal amount is larger than balance.")
+
+        self._balance = float(remaining_balance)
+
+    def get_account_info(self) -> AccountInfo:
+        return {
+            "account_id": self._account_id,
+            "account_status": self._account_status,
+            "balance": self._balance,
+            "user": self._user,
+        }
