@@ -37,6 +37,7 @@ class InsufficientFundsError(Exception):
 
 
 def verify_strict_numeric(value: object) -> TypeGuard[int | float]:
+    """Function verifies a value is strictly finite numeric value"""
     numeric = isinstance(value, (int, float))
     is_bool = isinstance(value, bool)
     if not numeric or is_bool:

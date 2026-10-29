@@ -8,6 +8,7 @@ from .base import (
     InsufficientFundsError,
     InvalidOperationError,
 )
+from .premium import PremiumAccount, PremiumAccountInfo
 from .savings import SavingsAccount, SavingsAccountInfo
 
 __all__ = [
@@ -21,6 +22,8 @@ __all__ = [
     "BankAccountInfo",
     "InsufficientFundsError",
     "InvalidOperationError",
+    "PremiumAccount",
+    "PremiumAccountInfo",
     "SavingsAccount",
     "SavingsAccountInfo",
 ]
