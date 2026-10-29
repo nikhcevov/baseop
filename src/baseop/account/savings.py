@@ -46,7 +46,7 @@ class SavingsAccount(AbstractAccount):
         last_acc_digits = str(values["account_id"])[-4:]
 
         return f"""
-        Account type: BankAccount
+        Account type: SavingsAccount
         Client: {values["user"].id}
         Last 4 dig.: {last_acc_digits}
         Status: {values["account_status"].name}
