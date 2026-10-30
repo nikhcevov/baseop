@@ -25,6 +25,7 @@ InvestmentPortfolio = dict[InvestmentAsset, float]
 
 class InvestmentAccountInfo(AccountInfo):
     portfolio: InvestmentPortfolio
+    total_value: float
 
 
 class InvestmentAccount(AbstractAccount):
@@ -32,14 +33,17 @@ class InvestmentAccount(AbstractAccount):
         self,
         user: User,
         account_id: AccountUUID | None = None,
+        balance: float = 0,
         account_status: AccountStatus = AccountStatus.Active,
         portfolio: InvestmentPortfolio | None = None,
     ) -> None:
-        super().__init__(user, account_id, balance=0, account_status=account_status)
+        super().__init__(user, account_id, balance, account_status)
         self._portfolio = {asset: 0.0 for asset in InvestmentAsset}
 
         for asset, amount in (portfolio or {}).items():
-            self._add_holding(amount, asset)
+            self._validate_asset_type(asset)
+            self._validate_amount_value(amount)
+            self._portfolio[asset] = float(amount)
 
     def __str__(self) -> str:
         values = self.get_account_info()
@@ -53,7 +57,8 @@ class InvestmentAccount(AbstractAccount):
         Client: {values["user"].id}
         Last 4 dig.: {last_acc_digits}
         Status: {values["account_status"].name}
-        Balance: {values["balance"]}
+        Cash balance: {values["balance"]}
+        Total value: {values["total_value"]}
         Portfolio: {portfolio}
         """
 
@@ -61,21 +66,31 @@ class InvestmentAccount(AbstractAccount):
     def portfolio(self) -> InvestmentPortfolio:
         return dict(self._portfolio)
 
+    @property
+    def total_value(self) -> float:
+        return self._balance + sum(self._portfolio.values())
+
     def _validate_asset_type(self, asset) -> None:
         if not isinstance(asset, InvestmentAsset):
             raise InvalidOperationError("Unknown asset type")
 
-    def _add_holding(self, amount: float, asset: InvestmentAsset) -> None:
-        self._validate_asset_type(asset)
-        self._validate_amount_value(amount)
-        if not isfinite(self._balance + amount):
-            raise InvalidOperationError("Portfolio value is too large.")
-        self._portfolio[asset] += amount
-        self._balance += amount
-
     def buy(self, amount: float, asset: InvestmentAsset) -> None:
         self._validate_account_status()
-        self._add_holding(amount, asset)
+        self._validate_asset_type(asset)
+        self._validate_amount_value(amount)
+
+        if amount > self._balance:
+            raise InsufficientFundsError("Not enough free funds.")
+
+        try:
+            holding_after_buy = self._portfolio[asset] + float(amount)
+        except OverflowError:
+            raise InvalidOperationError("Portfolio value is too large.")
+        if not isfinite(holding_after_buy):
+            raise InvalidOperationError("Portfolio value is too large.")
+
+        self._balance = float(self._balance - amount)
+        self._portfolio[asset] = holding_after_buy
 
     def sell(
         self,
@@ -89,28 +104,21 @@ class InvestmentAccount(AbstractAccount):
         if self._portfolio[asset] < amount:
             raise InsufficientFundsError("Not enough funds in asset.")
 
+        try:
+            balance_after_sell = self._balance + float(amount)
+        except OverflowError:
+            raise InvalidOperationError("Resulting balance is too large.")
+        if not isfinite(balance_after_sell):
+            raise InvalidOperationError("Resulting balance is too large.")
+
         self._portfolio[asset] -= amount
-        self._balance -= amount
+        self._balance = balance_after_sell
 
     def deposit(self, amount: float) -> None:
         self._add_to_balance(amount)
 
     def withdraw(self, amount: float) -> None:
-        self._validate_account_status()
-        self._validate_amount_value(amount)
-
-        if self._balance < amount:
-            raise InsufficientFundsError("Withdrawal amount is larger than balance.")
-
-        withdrawn = 0.0
-        for asset in InvestmentAsset:
-            taken = min(self._portfolio[asset], amount - withdrawn)
-            self._portfolio[asset] -= taken
-            withdrawn += taken
-            if withdrawn == amount:
-                break
-
-        self._balance -= withdrawn
+        self._subtract_from_balance(amount)
 
     def project_yearly_growth(
         self, growth_rates: dict[InvestmentAsset, float]
@@ -134,4 +142,5 @@ class InvestmentAccount(AbstractAccount):
         return {
             **base_values,
             "portfolio": dict(self._portfolio),
+            "total_value": self.total_value,
         }

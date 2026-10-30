@@ -75,6 +75,7 @@ class SavingsAccount(AbstractAccount):
 
     def apply_monthly_interest(self) -> None:
         """Adds monthly interest to balance"""
+        self._validate_account_status()
         try:
             balance_increase_value = self._balance * self._monthly_interest
             resulting_balance = self._balance + balance_increase_value

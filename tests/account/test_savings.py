@@ -4,6 +4,9 @@ from uuid import uuid4
 import pytest
 
 from baseop.account import (
+    AccountClosedError,
+    AccountFrozenError,
+    AccountStatus,
     InsufficientFundsError,
     InvalidOperationError,
     SavingsAccount,
@@ -101,3 +104,28 @@ def test_withdraw_balance_update(user: User):
     account = SavingsAccount(user, balance=100.0, min_balance=50.0)
     account.withdraw(25.0)
     assert account.balance == 75.0
+
+
+@pytest.mark.parametrize(
+    ("account_status", "expected_error"),
+    [
+        (AccountStatus.Closed, AccountClosedError),
+        (AccountStatus.Frozen, AccountFrozenError),
+    ],
+)
+def test_apply_monthly_interest_denied_for_inactive_account(
+    user: User,
+    account_status: AccountStatus,
+    expected_error: type[Exception],
+):
+    account = SavingsAccount(
+        user,
+        balance=1000.0,
+        monthly_interest=0.5,
+        account_status=account_status,
+    )
+
+    with pytest.raises(expected_error):
+        account.apply_monthly_interest()
+
+    assert account.balance == 1000.0
