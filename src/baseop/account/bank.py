@@ -53,8 +53,14 @@ class BankAccount(AbstractAccount):
     def currency(self) -> AccountCurrency:
         return self._currency
 
+    def deposit(self, amount: float) -> None:
+        self._add_to_balance(amount)
+
+    def withdraw(self, amount: float) -> None:
+        self._subtract_from_balance(amount)
+
     def get_account_info(self) -> BankAccountInfo:
-        base_values = super().get_account_info()
+        base_values = self._account_info()
 
         return {
             **base_values,

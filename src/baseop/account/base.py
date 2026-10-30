@@ -1,4 +1,4 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from enum import Enum
 from math import isfinite
 from typing import TypedDict, TypeGuard
@@ -102,7 +102,8 @@ class AbstractAccount(ABC):
     def account_status(self) -> AccountStatus:
         return self._account_status
 
-    def deposit(self, amount: float) -> None:
+    def _add_to_balance(self, amount: float) -> None:
+        """Shared deposit mechanics for account types."""
         self._validate_account_status()
         self._validate_amount_value(amount)
 
@@ -116,7 +117,8 @@ class AbstractAccount(ABC):
 
         self._balance = balance_after_deposit
 
-    def withdraw(self, amount: float) -> None:
+    def _subtract_from_balance(self, amount: float) -> None:
+        """Shared withdrawal mechanics for account types."""
         self._validate_account_status()
         self._validate_amount_value(amount)
 
@@ -126,10 +128,20 @@ class AbstractAccount(ABC):
 
         self._balance = float(remaining_balance)
 
-    def get_account_info(self) -> AccountInfo:
+    def _account_info(self) -> AccountInfo:
+        """Shared part of the account info for concrete account types."""
         return {
             "account_id": self._account_id,
             "account_status": self._account_status,
             "balance": self._balance,
             "user": self._user,
         }
+
+    @abstractmethod
+    def deposit(self, amount: float) -> None: ...
+
+    @abstractmethod
+    def withdraw(self, amount: float) -> None: ...
+
+    @abstractmethod
+    def get_account_info(self) -> AccountInfo: ...

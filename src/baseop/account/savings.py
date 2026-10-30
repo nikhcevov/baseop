@@ -86,6 +86,9 @@ class SavingsAccount(AbstractAccount):
 
         self._balance = float(resulting_balance)
 
+    def deposit(self, amount: float) -> None:
+        self._add_to_balance(amount)
+
     def withdraw(self, amount: float) -> None:
         self._validate_account_status()
         self._validate_amount_value(amount)
@@ -97,7 +100,7 @@ class SavingsAccount(AbstractAccount):
         self._balance = float(remaining_balance)
 
     def get_account_info(self) -> SavingsAccountInfo:
-        base_values = super().get_account_info()
+        base_values = self._account_info()
 
         return {
             **base_values,

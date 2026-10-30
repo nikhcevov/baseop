@@ -92,6 +92,9 @@ class InvestmentAccount(AbstractAccount):
         self._portfolio[asset] -= amount
         self._balance -= amount
 
+    def deposit(self, amount: float) -> None:
+        self._add_to_balance(amount)
+
     def withdraw(self, amount: float) -> None:
         self._validate_account_status()
         self._validate_amount_value(amount)
@@ -126,7 +129,7 @@ class InvestmentAccount(AbstractAccount):
         )
 
     def get_account_info(self) -> InvestmentAccountInfo:
-        base_values = super().get_account_info()
+        base_values = self._account_info()
 
         return {
             **base_values,

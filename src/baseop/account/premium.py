@@ -95,6 +95,9 @@ class PremiumAccount(AbstractAccount):
     def fixed_fee(self, value: float) -> None:
         self._fixed_fee = self._validate_setter_number(value)
 
+    def deposit(self, amount: float) -> None:
+        self._add_to_balance(amount)
+
     def withdraw(self, amount: float) -> None:
         self._validate_account_status()
         self._validate_amount_value(amount)
@@ -111,7 +114,7 @@ class PremiumAccount(AbstractAccount):
         self._balance = float(remaining_after_withdrawal)
 
     def get_account_info(self) -> PremiumAccountInfo:
-        base_values = super().get_account_info()
+        base_values = self._account_info()
 
         return {
             **base_values,
