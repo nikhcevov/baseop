@@ -11,16 +11,16 @@ from baseop.account import (
     InvalidOperationError,
     SavingsAccount,
 )
-from baseop.user import User
+from baseop.client import Client
 
 
 @pytest.fixture
 def user():
-    return User(id=uuid4(), name="John Doe")
+    return Client(id=uuid4(), first_name="John", last_name="Doe", age=30)
 
 
 @pytest.fixture
-def account(user: User):
+def account(user: Client):
     return SavingsAccount(user)
 
 
@@ -30,25 +30,25 @@ def test_account_has_immutable_attributes(account: SavingsAccount):
 
 
 @pytest.mark.parametrize("value", [1, 100.0])
-def test_account_init_with_good_min_balance(value: float, user: User):
+def test_account_init_with_good_min_balance(value: float, user: Client):
     account = SavingsAccount(user, min_balance=value)
     assert account.min_balance == value
 
 
 @pytest.mark.parametrize("value", [-1, -100.0, "balance", None])
-def test_account_not_init_with_bad_min_balance(value: object, user: User):
+def test_account_not_init_with_bad_min_balance(value: object, user: Client):
     with pytest.raises(ValueError):
         SavingsAccount(user, min_balance=value)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize("value", [1, 100.0])
-def test_account_init_with_good_monthly_interest(value: float, user: User):
+def test_account_init_with_good_monthly_interest(value: float, user: Client):
     account = SavingsAccount(user, monthly_interest=value)
     assert account.monthly_interest == value
 
 
 @pytest.mark.parametrize("value", [-1, -100.0, "balance", None])
-def test_account_not_init_with_bad_monthly_interest(value: object, user: User):
+def test_account_not_init_with_bad_monthly_interest(value: object, user: Client):
     with pytest.raises(ValueError):
         SavingsAccount(user, monthly_interest=value)  # pyright: ignore[reportArgumentType]
 
@@ -66,19 +66,19 @@ def test_monthly_interest_validates_good_args(account: SavingsAccount, value: fl
     assert account.monthly_interest == value
 
 
-def test_apply_monthly_interest_set_balance(user: User):
+def test_apply_monthly_interest_set_balance(user: Client):
     account = SavingsAccount(user, balance=1000.0, monthly_interest=0.5)
     account.apply_monthly_interest()
     assert account.balance == 1500.0
 
 
-def test_apply_monthly_interest_balance_overflow_raise_error(user: User):
+def test_apply_monthly_interest_balance_overflow_raise_error(user: Client):
     account = SavingsAccount(user, balance=1e308, monthly_interest=2)
     with pytest.raises(InvalidOperationError):
         account.apply_monthly_interest()
 
 
-def test_apply_monthly_interest_balance_overflow_not_change_balance(user: User):
+def test_apply_monthly_interest_balance_overflow_not_change_balance(user: Client):
     account = SavingsAccount(user, balance=1e308, monthly_interest=2)
     balance_before = account.balance
     with pytest.raises(InvalidOperationError):
@@ -86,13 +86,13 @@ def test_apply_monthly_interest_balance_overflow_not_change_balance(user: User):
     assert account.balance == balance_before
 
 
-def test_withdraw_minimal_balance_error(user: User):
+def test_withdraw_minimal_balance_error(user: Client):
     account = SavingsAccount(user, balance=100.0, min_balance=50.0)
     with pytest.raises(InsufficientFundsError):
         account.withdraw(60.0)
 
 
-def test_withdraw_minimal_balance_error_not_change_balance(user: User):
+def test_withdraw_minimal_balance_error_not_change_balance(user: Client):
     account = SavingsAccount(user, balance=100.0, min_balance=50.0)
     balance_before = account.balance
     with pytest.raises(InsufficientFundsError):
@@ -100,7 +100,7 @@ def test_withdraw_minimal_balance_error_not_change_balance(user: User):
     assert account.balance == balance_before
 
 
-def test_withdraw_balance_update(user: User):
+def test_withdraw_balance_update(user: Client):
     account = SavingsAccount(user, balance=100.0, min_balance=50.0)
     account.withdraw(25.0)
     assert account.balance == 75.0
@@ -114,7 +114,7 @@ def test_withdraw_balance_update(user: User):
     ],
 )
 def test_apply_monthly_interest_denied_for_inactive_account(
-    user: User,
+    user: Client,
     account_status: AccountStatus,
     expected_error: type[Exception],
 ):

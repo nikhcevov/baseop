@@ -7,16 +7,16 @@ from baseop.account import (
     InvalidOperationError,
     PremiumAccount,
 )
-from baseop.user import User
+from baseop.client import Client
 
 
 @pytest.fixture
 def user():
-    return User(id=uuid4(), name="John Doe")
+    return Client(id=uuid4(), first_name="John", last_name="Doe", age=30)
 
 
 @pytest.fixture
-def account(user: User):
+def account(user: Client):
     return PremiumAccount(
         user,
         balance=1000.0,
@@ -44,7 +44,7 @@ def test_withdraw_above_limit_denied(account: PremiumAccount):
     assert account.balance == balance_before
 
 
-def test_withdraw_can_use_overdraft(user: User):
+def test_withdraw_can_use_overdraft(user: Client):
     account = PremiumAccount(
         user,
         balance=100.0,
@@ -56,7 +56,7 @@ def test_withdraw_can_use_overdraft(user: User):
     assert account.balance == -100.0
 
 
-def test_withdraw_below_overdraft_denied(user: User):
+def test_withdraw_below_overdraft_denied(user: Client):
     account = PremiumAccount(
         user,
         balance=100.0,

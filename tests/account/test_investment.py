@@ -8,7 +8,7 @@ from baseop.account import (
     InvestmentAccount,
     InvestmentAsset,
 )
-from baseop.user import User
+from baseop.client import Client
 
 INITIAL_PORTFOLIO = {
     InvestmentAsset.stocks: 1000.0,
@@ -19,16 +19,16 @@ INITIAL_PORTFOLIO = {
 
 @pytest.fixture
 def user():
-    return User(id=uuid4(), name="John Doe")
+    return Client(id=uuid4(), first_name="John", last_name="Doe", age=30)
 
 
 @pytest.fixture
-def account(user: User):
+def account(user: Client):
     return InvestmentAccount(user, portfolio=dict(INITIAL_PORTFOLIO))
 
 
 @pytest.fixture
-def funded_account(user: User):
+def funded_account(user: Client):
     return InvestmentAccount(
         user,
         balance=1000.0,
@@ -42,7 +42,7 @@ def test_account_init_with_portfolio(account: InvestmentAccount):
     assert account.total_value == 3500.0
 
 
-def test_account_init_with_free_balance(user: User):
+def test_account_init_with_free_balance(user: Client):
     account = InvestmentAccount(
         user,
         balance=1000.0,
@@ -53,7 +53,7 @@ def test_account_init_with_free_balance(user: User):
 
 
 @pytest.mark.parametrize("value", [-1, 0, "amount", None])
-def test_account_init_validates_bad_portfolio_amount(value: object, user: User):
+def test_account_init_validates_bad_portfolio_amount(value: object, user: Client):
     with pytest.raises(InvalidOperationError):
         InvestmentAccount(
             user,
@@ -174,7 +174,7 @@ def test_sell_more_than_asset_denied(account: InvestmentAccount):
     assert account.balance == balance_before
 
 
-def test_sell_balance_overflow_denied(user: User):
+def test_sell_balance_overflow_denied(user: Client):
     account = InvestmentAccount(
         user,
         balance=1e308,

@@ -1,7 +1,7 @@
 from enum import Enum
 
-from baseop.user import User
-from baseop.uuid import AccountUUID
+from baseop.client import Client
+from baseop.uuid import AccountId
 
 from .base import (
     AbstractAccount,
@@ -25,8 +25,8 @@ class BankAccountInfo(AccountInfo):
 class BankAccount(AbstractAccount):
     def __init__(
         self,
-        user: User,
-        account_id: AccountUUID | None = None,
+        user: Client,
+        account_id: AccountId | None = None,
         balance: float = 0,
         account_status: AccountStatus = AccountStatus.Active,
         currency: AccountCurrency = AccountCurrency.RUB,

@@ -3,8 +3,8 @@ from enum import Enum
 from math import isfinite
 from typing import TypedDict, TypeGuard
 
-from baseop.user import User
-from baseop.uuid import AccountUUID, account_uuid
+from baseop.client import Client
+from baseop.uuid import AccountId, create_account_id
 
 
 class AccountStatus(Enum):
@@ -14,10 +14,10 @@ class AccountStatus(Enum):
 
 
 class AccountInfo(TypedDict):
-    account_id: AccountUUID
+    account_id: AccountId
     account_status: AccountStatus
     balance: float
-    user: User
+    user: Client
 
 
 class AccountFrozenError(Exception):
@@ -36,6 +36,11 @@ class InsufficientFundsError(Exception):
     pass
 
 
+def is_account_id(value: object) -> TypeGuard[str]:
+    """AccountId is inert outside pydantic, so plain classes verify it manually."""
+    return isinstance(value, str) and len(value) == 8
+
+
 def verify_strict_numeric(value: object) -> TypeGuard[int | float]:
     """Function verifies a value is strictly finite numeric value"""
     numeric = isinstance(value, (int, float))
@@ -51,16 +56,16 @@ def verify_strict_numeric(value: object) -> TypeGuard[int | float]:
 class AbstractAccount(ABC):
     def __init__(
         self,
-        user: User,
-        account_id: AccountUUID | None = None,
+        user: Client,
+        account_id: AccountId | None = None,
         balance: float = 0,
         account_status: AccountStatus = AccountStatus.Active,
     ) -> None:
-        self._account_id = account_id if account_id is not None else account_uuid()
-        if not isinstance(self._account_id, AccountUUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+        self._account_id = account_id if account_id is not None else create_account_id()
+        if not is_account_id(self._account_id):
             raise TypeError("Account id has invalid type")
 
-        if not isinstance(user, User):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not isinstance(user, Client):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError("User has invalid type")
         self._user = user
 
@@ -87,11 +92,11 @@ class AbstractAccount(ABC):
             raise InvalidOperationError("Amount must be positive value.")
 
     @property
-    def account_id(self) -> AccountUUID:
+    def account_id(self) -> AccountId:
         return self._account_id
 
     @property
-    def user(self) -> User:
+    def user(self) -> Client:
         return self._user
 
     @property
