@@ -27,12 +27,12 @@ def account(user: Client):
 
 @pytest.fixture
 def frozen_account(user: Client):
-    return BankAccount(user, account_status=AccountStatus.Frozen)
+    return BankAccount(user, account_status=AccountStatus.FROZEN)
 
 
 @pytest.fixture
 def closed_account(user: Client):
-    return BankAccount(user, account_status=AccountStatus.Closed)
+    return BankAccount(user, account_status=AccountStatus.CLOSED)
 
 
 def test_abstract_account_cannot_be_instantiated(user: Client):
@@ -85,17 +85,17 @@ def test_account_init_validate_user():
 
 
 def test_account_init_with_active_account(account: BankAccount):
-    assert account.account_status == AccountStatus.Active
+    assert account.account_status == AccountStatus.ACTIVE
 
 
 def test_account_init_with_frozen_account(user: Client):
-    account = BankAccount(user, account_status=AccountStatus.Frozen)
-    assert account.account_status == AccountStatus.Frozen
+    account = BankAccount(user, account_status=AccountStatus.FROZEN)
+    assert account.account_status == AccountStatus.FROZEN
 
 
 def test_account_init_with_closed_account(user: Client):
-    account = BankAccount(user, account_status=AccountStatus.Closed)
-    assert account.account_status == AccountStatus.Closed
+    account = BankAccount(user, account_status=AccountStatus.CLOSED)
+    assert account.account_status == AccountStatus.CLOSED
 
 
 def test_account_has_immutable_attributes(account: BankAccount, user: Client):
@@ -106,7 +106,7 @@ def test_account_has_immutable_attributes(account: BankAccount, user: Client):
     with pytest.raises(AttributeError):
         account.user = user  # pyright: ignore[reportAttributeAccessIssue]
     with pytest.raises(AttributeError):
-        account.account_status = AccountStatus.Frozen  # pyright: ignore[reportAttributeAccessIssue]
+        account.account_status = AccountStatus.FROZEN  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_deposit_frozen_account_denied(frozen_account: BankAccount):

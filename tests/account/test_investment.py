@@ -11,9 +11,9 @@ from baseop.account import (
 from baseop.client import Client
 
 INITIAL_PORTFOLIO = {
-    InvestmentAsset.stocks: 1000.0,
-    InvestmentAsset.bonds: 500.0,
-    InvestmentAsset.etf: 2000.0,
+    InvestmentAsset.STOCKS: 1000.0,
+    InvestmentAsset.BONDS: 500.0,
+    InvestmentAsset.ETF: 2000.0,
 }
 
 
@@ -57,7 +57,7 @@ def test_account_init_validates_bad_portfolio_amount(value: object, user: Client
     with pytest.raises(InvalidOperationError):
         InvestmentAccount(
             user,
-            portfolio={InvestmentAsset.stocks: value},  # pyright: ignore[reportArgumentType]
+            portfolio={InvestmentAsset.STOCKS: value},  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -99,16 +99,16 @@ def test_withdraw_reduces_only_cash(funded_account: InvestmentAccount):
 def test_buy_moves_cash_into_portfolio(funded_account: InvestmentAccount):
     total_before = funded_account.total_value
 
-    funded_account.buy(500.0, InvestmentAsset.etf)
+    funded_account.buy(500.0, InvestmentAsset.ETF)
 
     assert funded_account.balance == 500.0
-    assert funded_account.portfolio[InvestmentAsset.etf] == 2500.0
+    assert funded_account.portfolio[InvestmentAsset.ETF] == 2500.0
     assert funded_account.total_value == total_before
 
 
 def test_buy_without_free_funds_denied(account: InvestmentAccount):
     with pytest.raises(InsufficientFundsError):
-        account.buy(100.0, InvestmentAsset.etf)
+        account.buy(100.0, InvestmentAsset.ETF)
 
     assert account.balance == 0
     assert account.portfolio == INITIAL_PORTFOLIO
@@ -120,7 +120,7 @@ def test_buy_above_free_funds_denied(funded_account: InvestmentAccount):
     portfolio_before = funded_account.portfolio
 
     with pytest.raises(InsufficientFundsError):
-        funded_account.buy(1000.01, InvestmentAsset.etf)
+        funded_account.buy(1000.01, InvestmentAsset.ETF)
 
     assert funded_account.balance == balance_before
     assert funded_account.portfolio == portfolio_before
@@ -136,31 +136,31 @@ def test_buy_rejects_non_positive_amount(
     funded_account: InvestmentAccount, amount: float
 ):
     with pytest.raises(InvalidOperationError):
-        funded_account.buy(amount, InvestmentAsset.etf)
+        funded_account.buy(amount, InvestmentAsset.ETF)
 
 
 def test_buy_portfolio_overflow_denied(funded_account: InvestmentAccount):
     overflow_account = InvestmentAccount(
         funded_account.user,
         balance=1e308,
-        portfolio={InvestmentAsset.stocks: 1e308},
+        portfolio={InvestmentAsset.STOCKS: 1e308},
     )
     balance_before = overflow_account.balance
 
     with pytest.raises(InvalidOperationError):
-        overflow_account.buy(1e308, InvestmentAsset.stocks)
+        overflow_account.buy(1e308, InvestmentAsset.STOCKS)
 
     assert overflow_account.balance == balance_before
-    assert overflow_account.portfolio[InvestmentAsset.stocks] == 1e308
+    assert overflow_account.portfolio[InvestmentAsset.STOCKS] == 1e308
 
 
 def test_sell_returns_cash_from_portfolio(account: InvestmentAccount):
     total_before = account.total_value
 
-    account.sell(400.0, InvestmentAsset.stocks)
+    account.sell(400.0, InvestmentAsset.STOCKS)
 
     assert account.balance == 400.0
-    assert account.portfolio[InvestmentAsset.stocks] == 600.0
+    assert account.portfolio[InvestmentAsset.STOCKS] == 600.0
     assert account.total_value == total_before
 
 
@@ -168,9 +168,9 @@ def test_sell_more_than_asset_denied(account: InvestmentAccount):
     balance_before = account.balance
 
     with pytest.raises(InsufficientFundsError):
-        account.sell(600.0, InvestmentAsset.bonds)
+        account.sell(600.0, InvestmentAsset.BONDS)
 
-    assert account.portfolio[InvestmentAsset.bonds] == 500.0
+    assert account.portfolio[InvestmentAsset.BONDS] == 500.0
     assert account.balance == balance_before
 
 
@@ -178,12 +178,12 @@ def test_sell_balance_overflow_denied(user: Client):
     account = InvestmentAccount(
         user,
         balance=1e308,
-        portfolio={InvestmentAsset.stocks: 1e308},
+        portfolio={InvestmentAsset.STOCKS: 1e308},
     )
     portfolio_before = account.portfolio
 
     with pytest.raises(InvalidOperationError):
-        account.sell(1e308, InvestmentAsset.stocks)
+        account.sell(1e308, InvestmentAsset.STOCKS)
 
     assert account.balance == 1e308
     assert account.portfolio == portfolio_before
@@ -192,9 +192,9 @@ def test_sell_balance_overflow_denied(user: Client):
 def test_project_yearly_growth(account: InvestmentAccount):
     growth = account.project_yearly_growth(
         {
-            InvestmentAsset.stocks: 0.10,
-            InvestmentAsset.bonds: 0.04,
-            InvestmentAsset.etf: 0.07,
+            InvestmentAsset.STOCKS: 0.10,
+            InvestmentAsset.BONDS: 0.04,
+            InvestmentAsset.ETF: 0.07,
         }
     )
 

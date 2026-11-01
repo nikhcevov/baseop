@@ -23,7 +23,7 @@ class PremiumAccount(AbstractAccount):
         user: Client,
         account_id: AccountId | None = None,
         balance: float = 0,
-        account_status: AccountStatus = AccountStatus.Active,
+        account_status: AccountStatus = AccountStatus.ACTIVE,
         # Withdrawal limit is premium account only feature, I omit it intentionally for other account types
         withdrawal_limit: float = 1_000_000.0,
         overdraft_limit: float = 50_000.0,

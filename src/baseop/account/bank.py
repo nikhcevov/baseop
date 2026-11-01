@@ -11,11 +11,11 @@ from .base import (
 
 
 class AccountCurrency(Enum):
-    RUB = 1
-    USD = 2
-    EUR = 3
-    KZT = 4
-    CNY = 5
+    RUB = "rub"
+    USD = "usd"
+    EUR = "eur"
+    KZT = "kzt"
+    CNY = "cny"
 
 
 class BankAccountInfo(AccountInfo):
@@ -28,7 +28,7 @@ class BankAccount(AbstractAccount):
         user: Client,
         account_id: AccountId | None = None,
         balance: float = 0,
-        account_status: AccountStatus = AccountStatus.Active,
+        account_status: AccountStatus = AccountStatus.ACTIVE,
         currency: AccountCurrency = AccountCurrency.RUB,
     ) -> None:
         super().__init__(user, account_id, balance, account_status)

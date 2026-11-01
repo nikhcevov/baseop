@@ -109,8 +109,8 @@ def test_withdraw_balance_update(user: Client):
 @pytest.mark.parametrize(
     ("account_status", "expected_error"),
     [
-        (AccountStatus.Closed, AccountClosedError),
-        (AccountStatus.Frozen, AccountFrozenError),
+        (AccountStatus.CLOSED, AccountClosedError),
+        (AccountStatus.FROZEN, AccountFrozenError),
     ],
 )
 def test_apply_monthly_interest_denied_for_inactive_account(

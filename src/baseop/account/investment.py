@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import StrEnum
 from math import isfinite
 
 from baseop.client import Client
@@ -14,10 +14,10 @@ from .base import (
 )
 
 
-class InvestmentAsset(Enum):
-    stocks = 1
-    bonds = 2
-    etf = 3
+class InvestmentAsset(StrEnum):
+    STOCKS = "stocks"
+    BONDS = "bonds"
+    ETF = "etf"
 
 
 InvestmentPortfolio = dict[InvestmentAsset, float]
@@ -34,7 +34,7 @@ class InvestmentAccount(AbstractAccount):
         user: Client,
         account_id: AccountId | None = None,
         balance: float = 0,
-        account_status: AccountStatus = AccountStatus.Active,
+        account_status: AccountStatus = AccountStatus.ACTIVE,
         portfolio: InvestmentPortfolio | None = None,
     ) -> None:
         super().__init__(user, account_id, balance, account_status)

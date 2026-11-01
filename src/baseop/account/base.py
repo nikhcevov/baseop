@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from enum import Enum
+from enum import StrEnum
 from math import isfinite
 from typing import TypedDict, TypeGuard
 
@@ -7,10 +7,10 @@ from baseop.client import Client
 from baseop.uuid import AccountId, create_account_id
 
 
-class AccountStatus(Enum):
-    Active = 1
-    Frozen = 2
-    Closed = 3
+class AccountStatus(StrEnum):
+    ACTIVE = "active"
+    FROZEN = "frozen"
+    CLOSED = "closed"
 
 
 class AccountInfo(TypedDict):
@@ -59,7 +59,7 @@ class AbstractAccount(ABC):
         user: Client,
         account_id: AccountId | None = None,
         balance: float = 0,
-        account_status: AccountStatus = AccountStatus.Active,
+        account_status: AccountStatus = AccountStatus.ACTIVE,
     ) -> None:
         self._account_id = account_id if account_id is not None else create_account_id()
         if not is_account_id(self._account_id):
@@ -80,9 +80,9 @@ class AbstractAccount(ABC):
         self._account_status = account_status
 
     def _validate_account_status(self):
-        if self._account_status == AccountStatus.Closed:
+        if self._account_status == AccountStatus.CLOSED:
             raise AccountClosedError("Account is closed, operation denied.")
-        if self._account_status == AccountStatus.Frozen:
+        if self._account_status == AccountStatus.FROZEN:
             raise AccountFrozenError("Account is frozen, operation denied.")
 
     def _validate_amount_value(self, amount: object):

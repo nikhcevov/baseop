@@ -24,7 +24,7 @@ class SavingsAccount(AbstractAccount):
         user: Client,
         account_id: AccountId | None = None,
         balance: float = 0,
-        account_status: AccountStatus = AccountStatus.Active,
+        account_status: AccountStatus = AccountStatus.ACTIVE,
         min_balance: float = 0,
         monthly_interest: float = 0,
     ) -> None:
