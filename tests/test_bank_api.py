@@ -123,3 +123,20 @@ def test_night_operations_are_blocked(
 
     with pytest.raises(WorkingHoursError):
         bank.deposit(client.id, account["account_id"], 10)
+
+
+def test_failed_login_marks_client_suspicious(bank: Bank):
+    client = bank.add_client(
+        first_name="Bob",
+        last_name="Jones",
+        age=25,
+        secret="secret",
+    )
+
+    with pytest.raises(AuthenticationError):
+        bank.authenticate_client(client.id, "wrong")
+
+    assert client.suspicious is True
+
+    bank.authenticate_client(client.id, "secret")
+    assert client.suspicious is True

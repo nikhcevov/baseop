@@ -24,6 +24,7 @@ class Client(BaseModel):
     middle_name: Name | None = None
     last_name: Name
     status: ClientStatus = ClientStatus.ACTIVE
+    suspicious: bool = False
     account_ids: list[AccountId] = Field(default_factory=list)
     contacts: list[Contact] = Field(default_factory=list)
     age: Annotated[int, Field(ge=18, strict=True)]

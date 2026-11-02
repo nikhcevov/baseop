@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, time
 from enum import StrEnum
 from math import isclose
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import UUID, uuid4
 
 from pydantic import Field, validate_call
@@ -98,6 +98,9 @@ class Bank:
         client = self._require_client(client_id)
         if status != client.status:
             object.__setattr__(client, "status", status)
+
+    def _mark_suspicious(self, client_id: UUID) -> None:
+        object.__setattr__(self._require_client(client_id), "suspicious", True)
 
     @validate_call
     def _add_account_id(self, client_id: UUID, account_id: AccountId) -> None:
@@ -242,6 +245,7 @@ class Bank:
         if self._auth_tries[client_id] > 2:
             raise AuthenticationError("Invalid credentials limit exceeded")
         if secret != self._credentials[client_id]:
+            self._mark_suspicious(client_id)
             self._auth_tries[client_id] += 1
             if self._auth_tries[client_id] == 3:
                 self._set_status(client_id, ClientStatus.BLOCKED)
