@@ -72,6 +72,10 @@ class PremiumAccount(AbstractAccount):
         return float(value)
 
     @property
+    def total_value(self) -> float:
+        return self._balance
+
+    @property
     def withdrawal_limit(self) -> float:
         return self._withdrawal_limit
 

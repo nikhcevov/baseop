@@ -50,6 +50,10 @@ class BankAccount(AbstractAccount):
         """
 
     @property
+    def total_value(self) -> float:
+        return self._balance
+
+    @property
     def currency(self) -> AccountCurrency:
         return self._currency
 

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from math import isfinite
-from typing import TypedDict, TypeGuard
+from typing import ClassVar, TypedDict, TypeGuard
 
 from baseop.client import Client
 from baseop.uuid import AccountId, create_account_id
@@ -54,6 +54,12 @@ def verify_strict_numeric(value: object) -> TypeGuard[int | float]:
 
 
 class AbstractAccount(ABC):
+    _TRANSITIONS: ClassVar[dict[AccountStatus, set[AccountStatus]]] = {
+        AccountStatus.ACTIVE: set({AccountStatus.FROZEN, AccountStatus.CLOSED}),
+        AccountStatus.FROZEN: set({AccountStatus.ACTIVE, AccountStatus.CLOSED}),
+        AccountStatus.CLOSED: set(),
+    }
+
     def __init__(
         self,
         user: Client,
@@ -91,6 +97,21 @@ class AbstractAccount(ABC):
         if amount <= 0:
             raise InvalidOperationError("Amount must be positive value.")
 
+    def freeze(self) -> None:
+        if AccountStatus.FROZEN not in self._TRANSITIONS[self.account_status]:
+            raise InvalidOperationError("Account freeze unavailable")
+        self._account_status = AccountStatus.FROZEN
+
+    def unfreeze(self) -> None:
+        if AccountStatus.ACTIVE not in self._TRANSITIONS[self.account_status]:
+            raise InvalidOperationError("Account unfreeze unavailable")
+        self._account_status = AccountStatus.ACTIVE
+
+    def close(self) -> None:
+        if AccountStatus.CLOSED not in self._TRANSITIONS[self.account_status]:
+            raise InvalidOperationError("Account close unavailable")
+        self._account_status = AccountStatus.CLOSED
+
     @property
     def account_id(self) -> AccountId:
         return self._account_id
@@ -106,6 +127,12 @@ class AbstractAccount(ABC):
     @property
     def account_status(self) -> AccountStatus:
         return self._account_status
+
+    @property
+    @abstractmethod
+    def total_value(self) -> float:
+        """Returns total account value, calculated from all account assets"""
+        ...
 
     def _add_to_balance(self, amount: float) -> None:
         """Shared deposit mechanics for account types."""

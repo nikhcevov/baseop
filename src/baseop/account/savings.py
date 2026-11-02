@@ -56,6 +56,10 @@ class SavingsAccount(AbstractAccount):
         """
 
     @property
+    def total_value(self) -> float:
+        return self._balance
+
+    @property
     def min_balance(self) -> float:
         return self._min_balance
 
