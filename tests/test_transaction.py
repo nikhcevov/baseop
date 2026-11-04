@@ -16,6 +16,7 @@ from baseop.transaction import (
     TransactionPriority,
     TransactionProcessor,
     TransactionQueue,
+    TransactionRetryableError,
     TransactionStatus,
     TransactionType,
 )
@@ -209,7 +210,7 @@ def test_retry_then_success(
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise RuntimeError("transient")
+            raise TransactionRetryableError("transient")
 
     monkeypatch.setattr(processor, "_execute_transaction", flaky)
     tx = deposit(recipient, 10)
@@ -227,7 +228,7 @@ def test_retry_exhaustion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def always_fails(_tx: Transaction, _accounts: dict[str, AbstractAccount]) -> None:
-        raise RuntimeError("transient")
+        raise TransactionRetryableError("transient")
 
     monkeypatch.setattr(processor, "_execute_transaction", always_fails)
     tx = deposit(recipient, 10)
@@ -250,6 +251,7 @@ def test_frozen_account_is_rejected(
     )
 
     assert result.status is TransactionStatus.FAILED
+    assert result.attempts == 1
     assert account.balance == 1000
     assert recipient.balance == 0
 
@@ -265,8 +267,26 @@ def test_insufficient_funds_are_rejected(
     )
 
     assert result.status is TransactionStatus.FAILED
+    assert result.attempts == 1
     assert poor.balance == 50
     assert recipient.balance == 0
+
+
+def test_failed_credit_restores_sender(
+    processor: TransactionProcessor, client: Client
+) -> None:
+    sender = BankAccount(client, balance=1.7e308)
+    recipient = BankAccount(client, balance=1.7e308)
+    tx = transfer(sender, recipient, 1.7e308)
+
+    result = processor.process_one(
+        tx, {sender.account_id: sender, recipient.account_id: recipient}
+    )
+
+    assert result.status is TransactionStatus.FAILED
+    assert result.attempts == 1
+    assert sender.balance == 1.7e308
+    assert recipient.balance == 1.7e308
 
 
 def test_premium_account_may_go_negative(

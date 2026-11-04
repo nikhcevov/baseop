@@ -5,7 +5,15 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from baseop.account import AbstractAccount, AccountCurrency, BankAccount
+from baseop.account import (
+    AbstractAccount,
+    AccountClosedError,
+    AccountCurrency,
+    AccountFrozenError,
+    BankAccount,
+    InsufficientFundsError,
+    InvalidOperationError,
+)
 from baseop.account.base import AccountStatus
 from baseop.client import ClientStatus
 from baseop.uuid import AccountId
@@ -214,6 +222,22 @@ class TransactionRejected(TransactionError):
     pass
 
 
+class TransactionRetryableError(TransactionError):
+    pass
+
+
+_RETRYABLE_ERRORS = (TransactionRetryableError,)
+_TERMINAL_ERRORS = (
+    TransactionError,
+    AccountFrozenError,
+    AccountClosedError,
+    InsufficientFundsError,
+    InvalidOperationError,
+    ValueError,
+    KeyError,
+)
+
+
 _RATES_TO_RUB = {
     AccountCurrency.RUB: 1.0,
     AccountCurrency.USD: 90.0,
@@ -260,12 +284,16 @@ class TransactionProcessor:
             tx.attempts += 1
             try:
                 self._execute_transaction(tx, accounts)
-            except Exception as exc:
+            except _RETRYABLE_ERRORS as exc:
                 tx.errors.append(str(exc))
                 if tx.attempts == self._RETRY_COUNT:
                     tx.fail()
                     return tx
                 continue
+            except _TERMINAL_ERRORS as exc:
+                tx.errors.append(str(exc))
+                tx.fail()
+                return tx
 
             tx.complete()
             return tx
@@ -322,9 +350,13 @@ class TransactionProcessor:
             recipient = self._account(accounts, tx.to_account_id)
             self._is_active(recipient)
 
-            sender.withdraw(
-                round_money(convert(tx.amount, tx.currency, sender.currency))
-            )
-            recipient.deposit(
-                round_money(convert(tx.amount, tx.currency, recipient.currency))
-            )
+            debit = round_money(convert(tx.amount, tx.currency, sender.currency))
+            credit = round_money(convert(tx.amount, tx.currency, recipient.currency))
+            sender.withdraw(debit)
+            credited = False
+            try:
+                recipient.deposit(credit)
+                credited = True
+            finally:
+                if not credited:
+                    sender.deposit(debit)
