@@ -8,6 +8,7 @@ from pydantic import Field, validate_call
 
 from baseop.account import (
     AbstractAccount,
+    AccountCurrency,
     AccountInfo,
     AccountStatus,
     BankAccount,
@@ -17,6 +18,13 @@ from baseop.account import (
     SavingsAccount,
 )
 from baseop.client import Client, ClientStatus
+from baseop.transaction import (
+    Transaction,
+    TransactionPriority,
+    TransactionProcessor,
+    TransactionQueue,
+    TransactionType,
+)
 from baseop.uuid import AccountId, create_account_id
 
 _TIMEZONE = UTC
@@ -75,6 +83,8 @@ class Bank:
         """Keep creds as strings, its intentional simplifying"""
         self._authenticated: set[UUID] = set()
         self._auth_tries: dict[UUID, int] = {}
+        self._queue = TransactionQueue()
+        self._processor = TransactionProcessor()
 
     def _validate_op_time(self) -> None:
         bank_start = time(5, 0, 0)
@@ -147,6 +157,7 @@ class Bank:
         self,
         client_id: UUID,
         kind: AccountKind,
+        currency: AccountCurrency = AccountCurrency.RUB,
     ) -> AccountInfo:
         self._validate_op_time()
         self._validate_client_status(client_id)
@@ -162,11 +173,13 @@ class Bank:
         if account_id in self._accounts:
             raise DuplicateIdError("Duplicate account id")
 
+        extra_params = {"currency": currency} if kind == AccountKind.BANK else {}
         account = account_factory(
             account_id=account_id,
             user=client,
             account_status=AccountStatus.ACTIVE,
             balance=0,
+            **extra_params,
         )
         self._accounts[account_id] = account
         self._account_kind[account_id] = kind
@@ -202,6 +215,54 @@ class Bank:
         account = self._require_own_account(client_id, account_id)
         account.withdraw(amount)
         return account.get_account_info()
+
+    @validate_call
+    def submit_transfer(
+        self,
+        client_id: UUID,
+        from_account_id: AccountId,
+        amount: Annotated[float, Field(strict=True, gt=0)],
+        *,
+        to_account_id: AccountId | None = None,
+        external_destination: str | None = None,
+    ) -> Transaction:
+        self._validate_op_time()
+        self._validate_client_status(client_id)
+        self._validate_auth(client_id)
+
+        sender = self._require_own_account(client_id, from_account_id)
+        recipient = None
+        if to_account_id is not None:
+            recipient = self._accounts.get(to_account_id)
+            if recipient is None:
+                raise AccountNotFoundError("Account not found")
+
+        tx = Transaction(
+            type=TransactionType.TRANSFER,
+            amount=amount,
+            currency=sender.currency,
+            from_client_id=client_id,
+            from_account_id=sender.account_id,
+            to_account_id=recipient.account_id if recipient else None,
+            to_client_id=recipient.user.id if recipient else None,
+            external_destination=external_destination,
+        )
+        self._queue.add(tx, TransactionPriority.MEDIUM)
+        return tx
+
+    @validate_call
+    def cancel_transaction(self, client_id: UUID, tx_id: UUID) -> bool:
+        self._validate_client_status(client_id)
+        self._validate_auth(client_id)
+
+        tx = self._queue.get(tx_id)
+        if tx is None or tx.from_client_id != client_id:
+            return False
+        self._queue.cancel(tx_id)
+        return True
+
+    def run_transactions(self) -> list[Transaction]:
+        return self._processor.run_pending(self._queue, self._accounts)
 
     @validate_call
     def close_account(self, client_id: UUID, account_id: AccountId) -> None:

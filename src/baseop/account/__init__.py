@@ -1,7 +1,8 @@
-from .bank import AccountCurrency, BankAccount, BankAccountInfo
+from .bank import BankAccount, BankAccountInfo
 from .base import (
     AbstractAccount,
     AccountClosedError,
+    AccountCurrency,
     AccountFrozenError,
     AccountInfo,
     AccountStatus,

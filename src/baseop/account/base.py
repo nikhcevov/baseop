@@ -13,6 +13,14 @@ class AccountStatus(StrEnum):
     CLOSED = "closed"
 
 
+class AccountCurrency(StrEnum):
+    RUB = "rub"
+    USD = "usd"
+    EUR = "eur"
+    KZT = "kzt"
+    CNY = "cny"
+
+
 class AccountInfo(TypedDict):
     account_id: AccountId
     account_status: AccountStatus
@@ -66,6 +74,7 @@ class AbstractAccount(ABC):
         account_id: AccountId | None = None,
         balance: float = 0,
         account_status: AccountStatus = AccountStatus.ACTIVE,
+        currency: AccountCurrency = AccountCurrency.RUB,
     ) -> None:
         self._account_id = account_id if account_id is not None else create_account_id()
         if not is_account_id(self._account_id):
@@ -84,6 +93,10 @@ class AbstractAccount(ABC):
         if not isinstance(account_status, AccountStatus):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError("Account status has invalid type")
         self._account_status = account_status
+
+        if not isinstance(currency, AccountCurrency):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError("Account currency has invalid type")
+        self._currency = currency
 
     def _validate_account_status(self):
         if self._account_status == AccountStatus.CLOSED:
@@ -133,6 +146,10 @@ class AbstractAccount(ABC):
     def total_value(self) -> float:
         """Returns total account value, calculated from all account assets"""
         ...
+
+    @property
+    def currency(self) -> AccountCurrency:
+        return self._currency
 
     def _add_to_balance(self, amount: float) -> None:
         """Shared deposit mechanics for account types."""

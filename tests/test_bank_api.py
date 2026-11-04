@@ -15,6 +15,7 @@ from baseop.bank import (
     WorkingHoursError,
 )
 from baseop.client import Client, ClientStatus
+from baseop.transaction import TransactionStatus
 
 
 class _DayDateTime:
@@ -140,3 +141,82 @@ def test_failed_login_marks_client_suspicious(bank: Bank):
 
     bank.authenticate_client(client.id, "secret")
     assert client.suspicious is True
+
+
+def _balances(bank: Bank, client: Client) -> dict[str, float]:
+    return {
+        info["account_id"]: info["balance"]
+        for info in bank.search_accounts(client.id)
+    }
+
+
+def test_submit_and_process_internal_transfer(bank: Bank, client: Client):
+    sender = bank.open_account(client.id, AccountKind.BANK)["account_id"]
+    recipient = bank.open_account(client.id, AccountKind.BANK)["account_id"]
+    bank.deposit(client.id, sender, 1000.0)
+
+    tx = bank.submit_transfer(client.id, sender, 100.0, to_account_id=recipient)
+
+    assert tx.status is TransactionStatus.QUEUED
+    assert bank.run_transactions() == [tx]
+    assert tx.status is TransactionStatus.COMPLETED
+    assert _balances(bank, client) == {sender: 900.0, recipient: 100.0}
+
+
+def test_submit_external_transfer_charges_fee(bank: Bank, client: Client):
+    account_id = bank.open_account(client.id, AccountKind.BANK)["account_id"]
+    bank.deposit(client.id, account_id, 1000.0)
+
+    tx = bank.submit_transfer(
+        client.id,
+        account_id,
+        100.0,
+        external_destination="EXTERNAL-ACCOUNT",
+    )
+    bank.run_transactions()
+
+    assert tx.status is TransactionStatus.COMPLETED
+    assert tx.fee == 3.0
+    assert _balances(bank, client)[account_id] == 897.0
+
+
+def test_cancel_queued_transfer(bank: Bank, client: Client):
+    sender = bank.open_account(client.id, AccountKind.BANK)["account_id"]
+    recipient = bank.open_account(client.id, AccountKind.BANK)["account_id"]
+    bank.deposit(client.id, sender, 1000.0)
+
+    tx = bank.submit_transfer(client.id, sender, 100.0, to_account_id=recipient)
+
+    assert bank.cancel_transaction(client.id, tx.id) is True
+    assert tx.status is TransactionStatus.CANCELLED
+    assert bank.run_transactions() == []
+    assert _balances(bank, client) == {sender: 1000.0, recipient: 0.0}
+
+
+def test_transfer_requires_ownership(bank: Bank, client: Client):
+    account_id = bank.open_account(client.id, AccountKind.BANK)["account_id"]
+    bank.deposit(client.id, account_id, 100.0)
+
+    other = bank.add_client(
+        first_name="Bob",
+        last_name="Jones",
+        age=25,
+        secret="other",
+    )
+    bank.authenticate_client(other.id, "other")
+
+    with pytest.raises(AccountNotFoundError):
+        bank.submit_transfer(
+            other.id,
+            account_id,
+            10.0,
+            external_destination="EXTERNAL-ACCOUNT",
+        )
+
+    with pytest.raises(AccountNotFoundError):
+        bank.submit_transfer(
+            client.id,
+            account_id,
+            10.0,
+            to_account_id="zzzzzzzz",
+        )

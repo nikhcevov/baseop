@@ -1,21 +1,12 @@
-from enum import Enum
-
 from baseop.client import Client
 from baseop.uuid import AccountId
 
 from .base import (
     AbstractAccount,
+    AccountCurrency,
     AccountInfo,
     AccountStatus,
 )
-
-
-class AccountCurrency(Enum):
-    RUB = "rub"
-    USD = "usd"
-    EUR = "eur"
-    KZT = "kzt"
-    CNY = "cny"
 
 
 class BankAccountInfo(AccountInfo):
@@ -31,11 +22,7 @@ class BankAccount(AbstractAccount):
         account_status: AccountStatus = AccountStatus.ACTIVE,
         currency: AccountCurrency = AccountCurrency.RUB,
     ) -> None:
-        super().__init__(user, account_id, balance, account_status)
-
-        if not isinstance(currency, AccountCurrency):  # pyright: ignore[reportUnnecessaryIsInstance]
-            raise TypeError("Account currency has invalid type")
-        self._currency = currency
+        super().__init__(user, account_id, balance, account_status, currency)
 
     def __str__(self) -> str:
         values = self.get_account_info()
