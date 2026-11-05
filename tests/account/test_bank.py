@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 
-from baseop.account import AccountCurrency, BankAccount
+from baseop.account import BankAccount
 from baseop.client import Client
 
 
@@ -18,4 +18,4 @@ def account(user: Client):
 
 def test_bank_account_has_immutable_attributes(account: BankAccount, user: Client):
     with pytest.raises(AttributeError):
-        account.currency = AccountCurrency.CNY  # pyright: ignore[reportAttributeAccessIssue]
+        account.currency = "CNY"  # pyright: ignore[reportAttributeAccessIssue]

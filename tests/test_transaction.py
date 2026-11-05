@@ -5,12 +5,12 @@ import pytest
 
 from baseop.account import (
     AbstractAccount,
-    AccountCurrency,
     BankAccount,
     InvalidOperationError,
     PremiumAccount,
 )
 from baseop.client import Client
+from baseop.config import Currency
 from baseop.transaction import (
     InvalidTransactionError,
     Transaction,
@@ -66,7 +66,7 @@ def transfer(
     receiver: AbstractAccount | None,
     amount: float,
     *,
-    currency: AccountCurrency | None = None,
+    currency: Currency | None = None,
     destination: str | None = None,
 ) -> Transaction:
     return Transaction(
@@ -84,17 +84,17 @@ def test_deposit_and_withdraw(
 ) -> None:
     incoming = deposit(recipient, 100)
 
-    assert processor.process_one(incoming, {recipient.account_id: recipient}).status is (
-        TransactionStatus.COMPLETED
-    )
+    assert processor.process_one(
+        incoming, {recipient.account_id: recipient}
+    ).status is (TransactionStatus.COMPLETED)
     assert incoming.finished_at is not None
     assert recipient.balance == 100
 
     outgoing = withdraw(recipient, 40)
 
-    assert processor.process_one(outgoing, {recipient.account_id: recipient}).status is (
-        TransactionStatus.COMPLETED
-    )
+    assert processor.process_one(
+        outgoing, {recipient.account_id: recipient}
+    ).status is (TransactionStatus.COMPLETED)
     assert recipient.balance == 60
 
 
@@ -103,9 +103,12 @@ def test_internal_transfer(
 ) -> None:
     tx = transfer(account, recipient, 100)
 
-    assert processor.process_one(
-        tx, {account.account_id: account, recipient.account_id: recipient}
-    ).status is TransactionStatus.COMPLETED
+    assert (
+        processor.process_one(
+            tx, {account.account_id: account, recipient.account_id: recipient}
+        ).status
+        is TransactionStatus.COMPLETED
+    )
     assert account.balance == 900
     assert recipient.balance == 100
 
@@ -125,13 +128,14 @@ def test_external_transfer_charges_fee(
 def test_fx_transfer_converts_credit(
     processor: TransactionProcessor, client: Client
 ) -> None:
-    usd = BankAccount(client, balance=1000, currency=AccountCurrency.USD)
-    rub = BankAccount(client, balance=0, currency=AccountCurrency.RUB)
-    tx = transfer(usd, rub, 100, currency=AccountCurrency.RUB)
+    usd = BankAccount(client, balance=1000, currency="USD")
+    rub = BankAccount(client, balance=0, currency="RUB")
+    tx = transfer(usd, rub, 100, currency="RUB")
 
-    assert processor.process_one(
-        tx, {usd.account_id: usd, rub.account_id: rub}
-    ).status is TransactionStatus.COMPLETED
+    assert (
+        processor.process_one(tx, {usd.account_id: usd, rub.account_id: rub}).status
+        is TransactionStatus.COMPLETED
+    )
     assert usd.balance == pytest.approx(998.89)
     assert rub.balance == 100
 
@@ -153,7 +157,7 @@ def test_transfer_requires_exactly_one_recipient(
         Transaction(
             type=TransactionType.TRANSFER,
             amount=10,
-            currency=AccountCurrency.RUB,
+            currency="RUB",
             from_account_id=from_account_id,
             to_account_id=to_account_id,
             external_destination=destination,
@@ -331,7 +335,8 @@ def test_premium_account_may_go_negative(
     )
     tx = withdraw(premium, 300)
 
-    assert processor.process_one(
-        tx, {premium.account_id: premium}
-    ).status is TransactionStatus.COMPLETED
+    assert (
+        processor.process_one(tx, {premium.account_id: premium}).status
+        is TransactionStatus.COMPLETED
+    )
     assert premium.balance == -200

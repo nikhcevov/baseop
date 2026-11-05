@@ -1,24 +1,21 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from baseop.account import (
     AbstractAccount,
     AccountClosedError,
-    AccountCurrency,
     AccountFrozenError,
-    BankAccount,
     InsufficientFundsError,
     InvalidOperationError,
 )
 from baseop.account.base import AccountStatus
 from baseop.client import ClientStatus
+from baseop.config import APP_TIMEZONE, Currency, convert, round_money
 from baseop.uuid import AccountId
-
-_TIMEZONE = UTC
 
 
 class TransactionError(Exception):
@@ -51,17 +48,13 @@ class TransactionTarget(BaseModel):
     account_id: AccountId | None = None
 
 
-def account_currency(account: AbstractAccount) -> AccountCurrency:
-    return account.currency if isinstance(account, BankAccount) else AccountCurrency.RUB
-
-
 class Transaction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: UUID = Field(default_factory=uuid4)
     type: TransactionType
     amount: Annotated[float, Field(gt=0, allow_inf_nan=False)]
-    currency: AccountCurrency
+    currency: Currency
     fee: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
     from_client_id: UUID | None = None
     from_account_id: AccountId | None = None
@@ -71,9 +64,10 @@ class Transaction(BaseModel):
     status: TransactionStatus = TransactionStatus.QUEUED
     errors: list[str] = Field(default_factory=list)
     attempts: int = 0
-    created_at: datetime = Field(default_factory=lambda: datetime.now(_TIMEZONE))
-    scheduled_at: datetime = Field(default_factory=lambda: datetime.now(_TIMEZONE))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(APP_TIMEZONE))
+    scheduled_at: datetime = Field(default_factory=lambda: datetime.now(APP_TIMEZONE))
     finished_at: datetime | None = None
+    _failure: BaseException | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _check_withdraw_valid(self):
@@ -105,6 +99,11 @@ class Transaction(BaseModel):
         return self.errors[-1] if len(self.errors) else None
 
     @property
+    def failure(self) -> BaseException | None:
+        """Exception that terminated the transaction, if any"""
+        return self._failure
+
+    @property
     def is_external(self) -> bool:
         return (
             self.type == TransactionType.TRANSFER
@@ -116,19 +115,20 @@ class Transaction(BaseModel):
         if self.status != TransactionStatus.QUEUED:
             raise TransactionStatusError("Invalid transaction status")
         self.status = TransactionStatus.COMPLETED
-        self.finished_at = datetime.now(_TIMEZONE)
+        self.finished_at = datetime.now(APP_TIMEZONE)
 
     def cancel(self) -> None:
         if self.status != TransactionStatus.QUEUED:
             raise TransactionStatusError("Invalid transaction status")
         self.status = TransactionStatus.CANCELLED
-        self.finished_at = datetime.now(_TIMEZONE)
+        self.finished_at = datetime.now(APP_TIMEZONE)
 
-    def fail(self) -> None:
+    def fail(self, cause: BaseException | None = None) -> None:
         if self.status != TransactionStatus.QUEUED:
             raise TransactionStatusError("Invalid transaction status")
         self.status = TransactionStatus.FAILED
-        self.finished_at = datetime.now(_TIMEZONE)
+        self._failure = cause
+        self.finished_at = datetime.now(APP_TIMEZONE)
 
 
 class TransactionQueueInvalidStatusError(TransactionError):
@@ -199,7 +199,7 @@ class TransactionQueue:
                 (
                     (idx, tx)
                     for idx, tx in enumerate(self._queue[priority])
-                    if datetime.now(_TIMEZONE) >= tx.scheduled_at
+                    if datetime.now(APP_TIMEZONE) >= tx.scheduled_at
                     and tx.status == TransactionStatus.QUEUED
                 ),
                 (-1, None),
@@ -230,38 +230,18 @@ class TransactionCompensationError(TransactionError):
     pass
 
 
-_RETRYABLE_ERRORS = (TransactionRetryableError,)
-_TERMINAL_ERRORS = (
-    TransactionError,
-    AccountFrozenError,
-    AccountClosedError,
-    InsufficientFundsError,
-    InvalidOperationError,
-    ValueError,
-    KeyError,
-)
-
-
-_RATES_TO_RUB = {
-    AccountCurrency.RUB: 1.0,
-    AccountCurrency.USD: 90.0,
-    AccountCurrency.EUR: 100.0,
-    AccountCurrency.KZT: 0.20,
-    AccountCurrency.CNY: 12.0,
-}
-
-
-def round_money(amount: float) -> float:
-    return round(amount, 2)
-
-
-def convert(amount: float, source: AccountCurrency, target: AccountCurrency) -> float:
-    """Converts source currency to target"""
-    rate_to_rub = amount * _RATES_TO_RUB[source]
-    return rate_to_rub / _RATES_TO_RUB[target]
-
-
 class TransactionProcessor:
+    _RETRYABLE_ERRORS = (TransactionRetryableError,)
+    _TERMINAL_ERRORS = (
+        TransactionError,
+        AccountFrozenError,
+        AccountClosedError,
+        InsufficientFundsError,
+        InvalidOperationError,
+        ValueError,
+        KeyError,
+    )
+
     def __init__(self, external_fee: float | None = None) -> None:
         self._EXTERNAL_TRANSFER_FEE: float = (
             external_fee if external_fee is not None else 0.03
@@ -288,15 +268,15 @@ class TransactionProcessor:
             tx.attempts += 1
             try:
                 self._execute_transaction(tx, accounts)
-            except _RETRYABLE_ERRORS as exc:
+            except self._RETRYABLE_ERRORS as exc:
                 tx.errors.append(str(exc))
                 if tx.attempts == self._RETRY_COUNT:
-                    tx.fail()
+                    tx.fail(exc)
                     return tx
                 continue
-            except _TERMINAL_ERRORS as exc:
+            except self._TERMINAL_ERRORS as exc:
                 tx.errors.append(str(exc))
-                tx.fail()
+                tx.fail(exc)
                 return tx
 
             tx.complete()
@@ -315,8 +295,10 @@ class TransactionProcessor:
         return account
 
     def _is_active(self, account: AbstractAccount) -> None:
-        if account.account_status is not AccountStatus.ACTIVE:
-            raise TransactionRejected("Account status is invalid")
+        if account.account_status is AccountStatus.CLOSED:
+            raise AccountClosedError("Account is closed, operation denied.")
+        if account.account_status is AccountStatus.FROZEN:
+            raise AccountFrozenError("Account is frozen, operation denied.")
         if account.user.status is not ClientStatus.ACTIVE:
             raise TransactionRejected("Client status is invalid")
 
@@ -327,7 +309,7 @@ class TransactionProcessor:
             recipient = self._account(accounts, tx.to_account_id)
             self._is_active(recipient)
             amount_to_deposit = tx.amount
-            if recipient.currency is not tx.currency:
+            if recipient.currency != tx.currency:
                 amount_to_deposit = convert(tx.amount, tx.currency, recipient.currency)
             recipient.deposit(round_money(amount_to_deposit))
             return
@@ -336,7 +318,7 @@ class TransactionProcessor:
         self._is_active(sender)
         if tx.type == TransactionType.WITHDRAW:
             amount_to_withdraw = tx.amount
-            if sender.currency is not tx.currency:
+            if sender.currency != tx.currency:
                 amount_to_withdraw = convert(tx.amount, tx.currency, sender.currency)
             sender.withdraw(round_money(amount_to_withdraw))
             return

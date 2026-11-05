@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, time
+from datetime import datetime, time
 from enum import StrEnum
 from math import isclose
 from typing import Annotated
@@ -8,7 +8,6 @@ from pydantic import Field, validate_call
 
 from baseop.account import (
     AbstractAccount,
-    AccountCurrency,
     AccountInfo,
     AccountStatus,
     BankAccount,
@@ -17,18 +16,18 @@ from baseop.account import (
     PremiumAccount,
     SavingsAccount,
 )
+from baseop.audit import AuditLog, RiscAnalyzer
 from baseop.client import Client, ClientStatus
+from baseop.config import APP_TIMEZONE, Currency
 from baseop.transaction import (
     Transaction,
     TransactionPriority,
     TransactionProcessor,
     TransactionQueue,
+    TransactionStatus,
     TransactionType,
 )
 from baseop.uuid import AccountId, create_account_id
-
-_TIMEZONE = UTC
-"""Intentional assumption"""
 
 
 class AccountKind(StrEnum):
@@ -85,10 +84,12 @@ class Bank:
         self._auth_tries: dict[UUID, int] = {}
         self._queue = TransactionQueue()
         self._processor = TransactionProcessor()
+        self._audit_log = AuditLog()
+        self._risk_analyzer = RiscAnalyzer()
 
     def _validate_op_time(self) -> None:
         bank_start = time(5, 0, 0)
-        now = datetime.now(_TIMEZONE).astimezone(_TIMEZONE).time()
+        now = datetime.now(APP_TIMEZONE).astimezone(APP_TIMEZONE).time()
         if now < bank_start:
             raise WorkingHoursError("Bank working hours 05:00 to 00:00")
 
@@ -130,6 +131,14 @@ class Bank:
             raise AccountNotFoundError("Account not found")
         return account
 
+    def _execute_sync(self, tx: Transaction) -> None:
+        """Executes transaction immediately, propagates its failure"""
+        self._processor.process_one(tx, self._accounts)
+        if tx.status is TransactionStatus.FAILED:
+            if tx.failure is not None:
+                raise tx.failure
+            raise BankError(tx.fail_reason or "Transaction failed")
+
     @validate_call
     def add_client(
         self, *, first_name, last_name, age, middle_name=None, contacts=(), secret: str
@@ -157,7 +166,7 @@ class Bank:
         self,
         client_id: UUID,
         kind: AccountKind,
-        currency: AccountCurrency = AccountCurrency.RUB,
+        currency: Currency = "RUB",
     ) -> AccountInfo:
         self._validate_op_time()
         self._validate_client_status(client_id)
@@ -173,7 +182,10 @@ class Bank:
         if account_id in self._accounts:
             raise DuplicateIdError("Duplicate account id")
 
-        extra_params = {"currency": currency} if kind == AccountKind.BANK else {}
+        extra_params = {}
+        if kind == AccountKind.BANK:
+            extra_params: dict[str, Currency] = {"currency": currency}
+
         account = account_factory(
             account_id=account_id,
             user=client,
@@ -191,30 +203,46 @@ class Bank:
         self,
         client_id: UUID,
         account_id: AccountId,
-        amount: Annotated[float, Field(strict=True)],
-    ) -> AccountInfo:
+        amount: Annotated[float, Field(gt=0, strict=True)],
+    ) -> Transaction:
         self._validate_op_time()
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
         account = self._require_own_account(client_id, account_id)
-        account.deposit(amount)
-        return account.get_account_info()
+        tx = Transaction(
+            type=TransactionType.DEPOSIT,
+            amount=amount,
+            currency=account.currency,
+            to_client_id=client_id,
+            to_account_id=account.account_id,
+        )
+
+        self._execute_sync(tx)
+        return tx
 
     @validate_call
     def withdraw(
         self,
         client_id: UUID,
         account_id: AccountId,
-        amount: Annotated[float, Field(strict=True)],
-    ) -> AccountInfo:
+        amount: Annotated[float, Field(gt=0, strict=True)],
+    ) -> Transaction:
         self._validate_op_time()
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
         account = self._require_own_account(client_id, account_id)
-        account.withdraw(amount)
-        return account.get_account_info()
+        tx = Transaction(
+            type=TransactionType.WITHDRAW,
+            amount=amount,
+            currency=account.currency,
+            from_client_id=client_id,
+            from_account_id=account.account_id,
+        )
+
+        self._execute_sync(tx)
+        return tx
 
     @validate_call
     def submit_transfer(

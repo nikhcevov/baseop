@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from math import isfinite
-from typing import ClassVar, TypedDict, TypeGuard
+from typing import ClassVar, TypedDict, TypeGuard, cast, get_args
 
 from baseop.client import Client
+from baseop.config import Currency
 from baseop.uuid import AccountId, create_account_id
 
 
@@ -11,14 +12,6 @@ class AccountStatus(StrEnum):
     ACTIVE = "active"
     FROZEN = "frozen"
     CLOSED = "closed"
-
-
-class AccountCurrency(StrEnum):
-    RUB = "rub"
-    USD = "usd"
-    EUR = "eur"
-    KZT = "kzt"
-    CNY = "cny"
 
 
 class AccountInfo(TypedDict):
@@ -74,7 +67,7 @@ class AbstractAccount(ABC):
         account_id: AccountId | None = None,
         balance: float = 0,
         account_status: AccountStatus = AccountStatus.ACTIVE,
-        currency: AccountCurrency = AccountCurrency.RUB,
+        currency: Currency = "RUB",
     ) -> None:
         self._account_id = account_id if account_id is not None else create_account_id()
         if not is_account_id(self._account_id):
@@ -94,7 +87,7 @@ class AbstractAccount(ABC):
             raise TypeError("Account status has invalid type")
         self._account_status = account_status
 
-        if not isinstance(currency, AccountCurrency):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if currency not in get_args(Currency):
             raise TypeError("Account currency has invalid type")
         self._currency = currency
 
@@ -148,8 +141,8 @@ class AbstractAccount(ABC):
         ...
 
     @property
-    def currency(self) -> AccountCurrency:
-        return self._currency
+    def currency(self) -> Currency:
+        return cast(Currency, self._currency)
 
     def _add_to_balance(self, amount: float) -> None:
         """Shared deposit mechanics for account types."""

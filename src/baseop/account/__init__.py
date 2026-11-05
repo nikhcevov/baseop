@@ -2,7 +2,6 @@ from .bank import BankAccount, BankAccountInfo
 from .base import (
     AbstractAccount,
     AccountClosedError,
-    AccountCurrency,
     AccountFrozenError,
     AccountInfo,
     AccountStatus,
@@ -16,7 +15,6 @@ from .savings import SavingsAccount, SavingsAccountInfo
 __all__ = [
     "AbstractAccount",
     "AccountClosedError",
-    "AccountCurrency",
     "AccountFrozenError",
     "AccountInfo",
     "AccountStatus",

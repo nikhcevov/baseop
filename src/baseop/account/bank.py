@@ -1,16 +1,18 @@
+from typing import cast
+
 from baseop.client import Client
+from baseop.config import Currency
 from baseop.uuid import AccountId
 
 from .base import (
     AbstractAccount,
-    AccountCurrency,
     AccountInfo,
     AccountStatus,
 )
 
 
 class BankAccountInfo(AccountInfo):
-    currency: AccountCurrency
+    currency: Currency
 
 
 class BankAccount(AbstractAccount):
@@ -20,7 +22,7 @@ class BankAccount(AbstractAccount):
         account_id: AccountId | None = None,
         balance: float = 0,
         account_status: AccountStatus = AccountStatus.ACTIVE,
-        currency: AccountCurrency = AccountCurrency.RUB,
+        currency: Currency = "RUB",
     ) -> None:
         super().__init__(user, account_id, balance, account_status, currency)
 
@@ -33,7 +35,7 @@ class BankAccount(AbstractAccount):
         Client: {values["user"].id}
         Last 4 dig.: {last_acc_digits}
         Status: {values["account_status"].name}
-        Balance: {values["balance"]} {values["currency"].name}
+        Balance: {values["balance"]} {values["currency"]}
         """
 
     @property
@@ -41,8 +43,8 @@ class BankAccount(AbstractAccount):
         return self._balance
 
     @property
-    def currency(self) -> AccountCurrency:
-        return self._currency
+    def currency(self) -> Currency:
+        return cast(Currency, self._currency)
 
     def deposit(self, amount: float) -> None:
         self._add_to_balance(amount)
@@ -55,5 +57,5 @@ class BankAccount(AbstractAccount):
 
         return {
             **base_values,
-            "currency": self._currency,
+            "currency": cast(Currency, self._currency),
         }

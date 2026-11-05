@@ -3,8 +3,10 @@ from datetime import UTC, datetime
 import pytest
 
 from baseop.account import (
+    AccountClosedError,
     AccountFrozenError,
     AccountStatus,
+    InsufficientFundsError,
     InvalidOperationError,
 )
 from baseop.bank import (
@@ -49,8 +51,16 @@ def test_account_lifecycle(bank: Bank, client: Client):
     assert info["balance"] == 0
     assert info["account_status"] is AccountStatus.ACTIVE
 
-    assert bank.deposit(client.id, account_id, 100)["balance"] == 100
-    assert bank.withdraw(client.id, account_id, 40)["balance"] == 60
+    def balance() -> float:
+        return bank.search_accounts(client.id)[0]["balance"]
+
+    deposited = bank.deposit(client.id, account_id, 100)
+    assert deposited.status is TransactionStatus.COMPLETED
+    assert balance() == 100
+
+    withdrawn = bank.withdraw(client.id, account_id, 40)
+    assert withdrawn.status is TransactionStatus.COMPLETED
+    assert balance() == 60
     assert bank.get_total_balance() == 60
     assert bank.get_clients_ranking()[client.id] == 60
 
@@ -62,8 +72,15 @@ def test_account_lifecycle(bank: Bank, client: Client):
     with pytest.raises(InvalidOperationError):
         bank.close_account(client.id, account_id)
 
+    with pytest.raises(InsufficientFundsError):
+        bank.withdraw(client.id, account_id, 1000.0)
+    assert balance() == 60
+
     bank.withdraw(client.id, account_id, 60)
     bank.close_account(client.id, account_id)
+
+    with pytest.raises(AccountClosedError):
+        bank.deposit(client.id, account_id, 1.0)
 
     closed = bank.search_accounts(client.id, status=AccountStatus.CLOSED)
     assert closed[0]["account_status"] is AccountStatus.CLOSED
@@ -110,9 +127,7 @@ def test_account_operations_are_scoped_to_owner(bank: Bank):
         bank.deposit(bob.id, account["account_id"], 50)
 
 
-def test_night_operations_are_blocked(
-    bank: Bank, client: Client, monkeypatch
-):
+def test_night_operations_are_blocked(bank: Bank, client: Client, monkeypatch):
     account = bank.open_account(client.id, AccountKind.BANK)
 
     class _NightDateTime:
@@ -145,8 +160,7 @@ def test_failed_login_marks_client_suspicious(bank: Bank):
 
 def _balances(bank: Bank, client: Client) -> dict[str, float]:
     return {
-        info["account_id"]: info["balance"]
-        for info in bank.search_accounts(client.id)
+        info["account_id"]: info["balance"] for info in bank.search_accounts(client.id)
     }
 
 
