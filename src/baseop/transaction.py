@@ -226,6 +226,10 @@ class TransactionRetryableError(TransactionError):
     pass
 
 
+class TransactionCompensationError(TransactionError):
+    pass
+
+
 _RETRYABLE_ERRORS = (TransactionRetryableError,)
 _TERMINAL_ERRORS = (
     TransactionError,
@@ -352,6 +356,7 @@ class TransactionProcessor:
 
             debit = round_money(convert(tx.amount, tx.currency, sender.currency))
             credit = round_money(convert(tx.amount, tx.currency, recipient.currency))
+            balance_before = sender.balance
             sender.withdraw(debit)
             credited = False
             try:
@@ -359,4 +364,6 @@ class TransactionProcessor:
                 credited = True
             finally:
                 if not credited:
-                    sender.deposit(debit)
+                    sender.deposit(balance_before - sender.balance)
+                    if sender.balance != balance_before:
+                        raise TransactionCompensationError("Balance compensation error")

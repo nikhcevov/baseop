@@ -7,6 +7,7 @@ from baseop.account import (
     AbstractAccount,
     AccountCurrency,
     BankAccount,
+    InvalidOperationError,
     PremiumAccount,
 )
 from baseop.client import Client
@@ -287,6 +288,36 @@ def test_failed_credit_restores_sender(
     assert result.attempts == 1
     assert sender.balance == 1.7e308
     assert recipient.balance == 1.7e308
+
+
+def test_failed_credit_refunds_premium_fee(
+    processor: TransactionProcessor,
+    client: Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    premium = PremiumAccount(
+        client,
+        balance=1000,
+        withdrawal_limit=1_000_000,
+        overdraft_limit=0,
+        fixed_fee=100,
+    )
+    recipient = BankAccount(client, balance=0)
+
+    def fail_deposit(_amount: float) -> None:
+        raise InvalidOperationError("credit failed")
+
+    monkeypatch.setattr(recipient, "deposit", fail_deposit)
+    tx = transfer(premium, recipient, 100)
+
+    result = processor.process_one(
+        tx, {premium.account_id: premium, recipient.account_id: recipient}
+    )
+
+    assert result.status is TransactionStatus.FAILED
+    assert result.attempts == 1
+    assert premium.balance == 1000
+    assert recipient.balance == 0
 
 
 def test_premium_account_may_go_negative(
