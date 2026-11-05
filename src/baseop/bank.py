@@ -262,6 +262,7 @@ class Bank:
         return True
 
     def run_transactions(self) -> list[Transaction]:
+        self._validate_op_time()
         return self._processor.run_pending(self._queue, self._accounts)
 
     @validate_call
