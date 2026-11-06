@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +11,8 @@ class ClientStatus(StrEnum):
     ACTIVE = "active"
     BLOCKED = "blocked"
 
+
+ClientRisk = Literal["HIGH", "MEDIUM", "LOW"]
 
 Name = Annotated[str, Field(min_length=2, max_length=50)]
 Contact = Annotated[str, Field(min_length=7, max_length=11)]
@@ -25,6 +27,7 @@ class Client(BaseModel):
     last_name: Name
     status: ClientStatus = ClientStatus.ACTIVE
     suspicious: bool = False
+    risk_profile: ClientRisk | None = None
     account_ids: list[AccountId] = Field(default_factory=list)
     contacts: list[Contact] = Field(default_factory=list)
     age: Annotated[int, Field(ge=18, strict=True)]

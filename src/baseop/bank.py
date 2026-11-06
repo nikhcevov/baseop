@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime, time
 from enum import StrEnum
 from math import isclose
@@ -198,6 +199,14 @@ class Bank:
         self._add_account_id(client_id, account_id)
         return account.get_account_info()
 
+    def _audit(self, tx: Transaction) -> None:
+        logs = self._risk_analyzer.audit_operation(tx, self._audit_log)
+
+        if not logs or not len(logs):
+            return
+
+        counts = Counter(log.severity for log in logs)
+
     @validate_call
     def deposit(
         self,
@@ -218,6 +227,7 @@ class Bank:
             to_account_id=account.account_id,
         )
 
+        self._audit(tx)
         self._execute_sync(tx)
         return tx
 
@@ -241,6 +251,7 @@ class Bank:
             from_account_id=account.account_id,
         )
 
+        self._audit(tx)
         self._execute_sync(tx)
         return tx
 
@@ -275,6 +286,7 @@ class Bank:
             to_client_id=recipient.user.id if recipient else None,
             external_destination=external_destination,
         )
+        self._audit(tx)
         self._queue.add(tx, TransactionPriority.MEDIUM)
         return tx
 
