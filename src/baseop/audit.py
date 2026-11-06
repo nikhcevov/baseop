@@ -46,6 +46,15 @@ class AuditLog:
         with open(path, "w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False, indent=2)
 
+    def get_suspicious_operations(
+        self, sort: Literal["asc", "desc"] = "desc"
+    ) -> list[LogEntry]:
+        return [
+            entry
+            for entry in self.search_logs(sort=sort)
+            if entry.severity >= AuditLogSeverity.MEDIUM
+        ]
+
     def search_logs(
         self,
         *,

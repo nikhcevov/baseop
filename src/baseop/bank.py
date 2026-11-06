@@ -1,7 +1,8 @@
+from collections import Counter
 from datetime import datetime, time
 from enum import StrEnum
 from math import isclose
-from typing import Annotated
+from typing import Annotated, TypedDict
 from uuid import UUID, uuid4
 
 from pydantic import Field, validate_call
@@ -79,6 +80,12 @@ class SuspiciousOperationError(BankError):
         self.entries = entries
 
 
+class ClientRiskReport(TypedDict):
+    risk_profile: ClientRisk | None
+    suspicious: bool
+    findings: dict[AuditLogSeverity, int]
+
+
 _SEVERITY_TO_RISK: dict[AuditLogSeverity, ClientRisk | None] = {
     AuditLogSeverity.NONE: None,
     AuditLogSeverity.LOW: "LOW",
@@ -103,6 +110,7 @@ class Bank:
         self._processor = TransactionProcessor()
         self._audit_log = AuditLog()
         self._risk_analyzer = RiscAnalyzer()
+        self._error_stats: Counter[str] = Counter()
 
     def _validate_op_time(self) -> None:
         bank_start = time(5, 0, 0)
@@ -148,10 +156,14 @@ class Bank:
             raise AccountNotFoundError("Account not found")
         return account
 
+    def _record_error(self, tx: Transaction) -> None:
+        self._error_stats[tx.fail_reason or "unknown"] += 1
+
     def _execute_sync(self, tx: Transaction) -> None:
         """Executes transaction immediately, propagates its failure"""
         self._processor.process_one(tx, self._accounts)
         if tx.status is TransactionStatus.FAILED:
+            self._record_error(tx)
             if tx.failure is not None:
                 raise tx.failure
             raise BankError(tx.fail_reason or "Transaction failed")
@@ -363,7 +375,11 @@ class Bank:
         return True
 
     def run_transactions(self) -> list[Transaction]:
-        return self._processor.run_pending(self._queue, self._accounts)
+        processed = self._processor.run_pending(self._queue, self._accounts)
+        for tx in processed:
+            if tx.status is TransactionStatus.FAILED:
+                self._record_error(tx)
+        return processed
 
     @validate_call
     def close_account(self, client_id: UUID, account_id: AccountId) -> None:
@@ -458,3 +474,21 @@ class Bank:
             ranking[client.id] = total_balance
 
         return dict(sorted(ranking.items(), reverse=True, key=lambda x: x[1]))
+
+    def get_client_risk_profile(self, client_id: UUID) -> ClientRiskReport:
+        client = self._require_client(client_id)
+        findings = [
+            entry
+            for entry in self._audit_log.search_logs(client_id=client_id)
+            if entry.severity is not AuditLogSeverity.NONE
+        ]
+        counts = Counter(entry.severity for entry in findings)
+
+        return {
+            "risk_profile": client.risk_profile,
+            "suspicious": client.suspicious,
+            "findings": dict(counts),
+        }
+
+    def get_error_stats(self) -> dict[str, int]:
+        return dict(self._error_stats)

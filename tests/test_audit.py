@@ -5,16 +5,28 @@ from uuid import uuid4
 
 import pytest
 
+from baseop.account import InsufficientFundsError
 from baseop.audit import AuditLog, AuditLogSeverity, LogEntry, RiscAnalyzer
-from baseop.bank import AccountKind, Bank, SuspiciousOperationError
-from baseop.client import Client
-from baseop.transaction import Transaction, TransactionType
+from baseop.bank import (
+    AccountKind,
+    Bank,
+    ClientInactiveError,
+    SuspiciousOperationError,
+)
+from baseop.client import Client, ClientStatus
+from baseop.transaction import Transaction, TransactionStatus, TransactionType
 
 
 class _DayDateTime:
     @classmethod
     def now(cls, _tz=None):
         return datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+
+class _NightDateTime:
+    @classmethod
+    def now(cls, _tz=None):
+        return datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -279,3 +291,163 @@ def test_export_of_empty_selection_writes_empty_list(tmp_path: Path) -> None:
     audit_log.export_to_file([], path=str(path))
 
     assert _read_export(path) == []
+
+
+def test_suspicious_operations_exclude_routine_entries() -> None:
+    audit_log = AuditLog()
+    audit_log.add(_entry(AuditLogSeverity.NONE, "transaction"))
+    audit_log.add(_entry(AuditLogSeverity.LOW, "operation_time"))
+    audit_log.add(_entry(AuditLogSeverity.MEDIUM, "new_account"))
+    audit_log.add(_entry(AuditLogSeverity.HIGH, "transaction_amount"))
+
+    suspicious = audit_log.get_suspicious_operations()
+
+    assert {entry.severity for entry in suspicious} == {
+        AuditLogSeverity.MEDIUM,
+        AuditLogSeverity.HIGH,
+    }
+    assert {entry.tags[0] for entry in suspicious} == {
+        "new_account",
+        "transaction_amount",
+    }
+
+
+def test_client_risk_profile_reports_findings(bank: Bank, client: Client) -> None:
+    account_id = _open_account(bank, client)
+
+    assert bank.get_client_risk_profile(client.id) == {
+        "risk_profile": None,
+        "suspicious": False,
+        "findings": {},
+    }
+
+    bank.deposit(client.id, account_id, 400_000)
+
+    assert bank.get_client_risk_profile(client.id) == {
+        "risk_profile": "MEDIUM",
+        "suspicious": True,
+        "findings": {AuditLogSeverity.MEDIUM: 1},
+    }
+
+    with pytest.raises(SuspiciousOperationError):
+        bank.deposit(client.id, account_id, 1_000_000)
+
+    profile = bank.get_client_risk_profile(client.id)
+    assert profile["risk_profile"] == "HIGH"
+    assert profile["findings"] == {
+        AuditLogSeverity.MEDIUM: 1,
+        AuditLogSeverity.HIGH: 1,
+    }
+
+
+def test_error_stats_count_failed_operations(bank: Bank, client: Client) -> None:
+    account_id = _open_account(bank, client)
+    bank.deposit(client.id, account_id, 100)
+
+    assert bank.get_error_stats() == {}
+
+    with pytest.raises(InsufficientFundsError):
+        bank.withdraw(client.id, account_id, 1000)
+    with pytest.raises(InsufficientFundsError):
+        bank.withdraw(client.id, account_id, 1000)
+
+    assert bank.get_error_stats() == {"Withdrawal amount is larger than balance.": 2}
+
+
+def test_error_stats_count_failed_queued_transfer(bank: Bank, client: Client) -> None:
+    sender = _open_account(bank, client)
+    recipient = _open_account(bank, client)
+
+    tx = bank.submit_transfer(client.id, sender, 100, to_account_id=recipient)
+    assert tx.status is TransactionStatus.QUEUED
+
+    processed = bank.run_transactions()
+
+    assert [item.status for item in processed] == [TransactionStatus.FAILED]
+    assert bank.get_error_stats() == {"Withdrawal amount is larger than balance.": 1}
+
+
+def test_night_operation_is_flagged(monkeypatch) -> None:
+    monkeypatch.setattr("baseop.bank.datetime", _NightDateTime)
+    monkeypatch.setattr("baseop.transaction.datetime", _NightDateTime)
+    bank = Bank()
+    client = bank.add_client(
+        first_name="Alice",
+        last_name="Smith",
+        age=30,
+        secret="secret",
+    )
+    bank.authenticate_client(client.id, "secret")
+    account_id = _open_account(bank, client)
+
+    bank.deposit(client.id, account_id, 100)
+
+    findings = bank._audit_log.search_logs(severity=AuditLogSeverity.LOW)
+    assert len(findings) == 1
+    assert findings[0].tags == ["operation_time"]
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [
+        (349_999.0, None),
+        (350_000.0, AuditLogSeverity.MEDIUM),
+        (999_999.0, AuditLogSeverity.MEDIUM),
+    ],
+)
+def test_amount_thresholds(
+    bank: Bank,
+    client: Client,
+    amount: float,
+    expected: AuditLogSeverity | None,
+) -> None:
+    account_id = _open_account(bank, client)
+
+    bank.deposit(client.id, account_id, amount)
+
+    findings = [
+        entry
+        for entry in bank._audit_log.search_logs()
+        if "transaction_amount" in entry.tags
+    ]
+    assert [entry.severity for entry in findings] == (
+        [] if expected is None else [expected]
+    )
+
+
+def test_third_high_risk_operation_blocks_client(bank: Bank, client: Client) -> None:
+    account_id = _open_account(bank, client)
+
+    for _ in range(2):
+        with pytest.raises(SuspiciousOperationError):
+            bank.deposit(client.id, account_id, 1_000_000)
+    assert client.status is ClientStatus.ACTIVE
+
+    with pytest.raises(SuspiciousOperationError):
+        bank.deposit(client.id, account_id, 1_000_000)
+
+    assert client.status is ClientStatus.BLOCKED
+    with pytest.raises(ClientInactiveError):
+        bank.deposit(client.id, account_id, 100)
+
+
+def test_search_logs_filters_by_tag_and_sorts() -> None:
+    audit_log = AuditLog()
+    first = _entry(AuditLogSeverity.MEDIUM, "new_account")
+    second = _entry(AuditLogSeverity.HIGH, "transaction_amount")
+    first.created_at = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    second.created_at = datetime(2026, 1, 1, 11, 0, tzinfo=UTC)
+    audit_log.add(first)
+    audit_log.add(second)
+
+    assert [entry.tx_id for entry in audit_log.search_logs(tags=["new_account"])] == [
+        first.tx_id
+    ]
+    assert [entry.tx_id for entry in audit_log.search_logs(sort="asc")] == [
+        first.tx_id,
+        second.tx_id,
+    ]
+    assert [entry.tx_id for entry in audit_log.search_logs(sort="desc")] == [
+        second.tx_id,
+        first.tx_id,
+    ]
