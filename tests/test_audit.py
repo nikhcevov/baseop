@@ -1,4 +1,6 @@
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -220,3 +222,60 @@ def test_repeated_audit_does_not_inflate_frequency(bank: Bank, client: Client) -
     bank.deposit(client.id, account_id, 100)
 
     assert bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM) == []
+
+
+def _entry(severity: AuditLogSeverity, tag: str) -> LogEntry:
+    return LogEntry(
+        tx_id=uuid4(),
+        client_ids=[uuid4()],
+        severity=severity,
+        message="test entry",
+        tags=[tag],
+    )
+
+
+def _read_export(path: Path) -> list[dict]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_export_writes_json_objects(tmp_path: Path) -> None:
+    audit_log = AuditLog()
+    first = _entry(AuditLogSeverity.MEDIUM, "transaction_amount")
+    second = _entry(AuditLogSeverity.HIGH, "new_account")
+    audit_log.add(first)
+    audit_log.add(second)
+    path = tmp_path / "logs.json"
+
+    audit_log.export_to_file(path=str(path))
+
+    data = _read_export(path)
+    assert all(isinstance(item, dict) for item in data)
+    assert [item["tx_id"] for item in data] == [str(first.tx_id), str(second.tx_id)]
+    assert data[0]["severity"] == AuditLogSeverity.MEDIUM.value
+    assert data[0]["tags"] == ["transaction_amount"]
+    assert data[0]["client_ids"] == [str(first.client_ids[0])]
+    assert isinstance(data[0]["created_at"], str)
+
+
+def test_export_honours_explicit_selection(tmp_path: Path) -> None:
+    audit_log = AuditLog()
+    first = _entry(AuditLogSeverity.MEDIUM, "transaction_amount")
+    second = _entry(AuditLogSeverity.HIGH, "new_account")
+    audit_log.add(first)
+    audit_log.add(second)
+    path = tmp_path / "selected.json"
+
+    audit_log.export_to_file([second], path=str(path))
+
+    data = _read_export(path)
+    assert [item["tx_id"] for item in data] == [str(second.tx_id)]
+
+
+def test_export_of_empty_selection_writes_empty_list(tmp_path: Path) -> None:
+    audit_log = AuditLog()
+    audit_log.add(_entry(AuditLogSeverity.HIGH, "new_account"))
+    path = tmp_path / "empty.json"
+
+    audit_log.export_to_file([], path=str(path))
+
+    assert _read_export(path) == []

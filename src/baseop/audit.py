@@ -41,9 +41,10 @@ class AuditLog:
     def export_to_file(
         self, log_entries: list[LogEntry] | None = None, path: str = "logs.json"
     ) -> None:
-        logs = log_entries if log_entries and len(log_entries) else self._logs
+        logs = self._logs if log_entries is None else log_entries
+        payload = [entry.model_dump(mode="json") for entry in logs]
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(logs, file, default=str)
+            json.dump(payload, file, ensure_ascii=False, indent=2)
 
     def search_logs(
         self,
