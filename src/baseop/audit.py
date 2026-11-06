@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from baseop.config import APP_TIMEZONE, convert
 from baseop.transaction import Transaction, TransactionType
+from baseop.uuid import AccountId
 
 
 class AuditLogSeverity(IntEnum):
@@ -52,6 +53,7 @@ class AuditLog:
         sort: Literal["asc", "desc"] | None = None,
         severity: AuditLogSeverity | None = None,
         tx_id: UUID | None = None,
+        client_id: UUID | None = None,
         tags: list[str] | None = None,
     ) -> list[LogEntry]:
         search_result = [
@@ -62,6 +64,10 @@ class AuditLog:
             and (severity is None or log.severity is severity)
             and (tx_id is None or log.tx_id == tx_id)
             and (tags is None or any(tag in log.tags for tag in tags))
+            and (
+                client_id is None
+                or any(uid for uid in log.client_ids if uid == client_id)
+            )
         ]
         if sort:
             reverse = sort == "desc"
@@ -72,11 +78,15 @@ class AuditLog:
     def get_report(self) -> str:
         by_tags = Counter(tag for log in self._logs for tag in log.tags)
         by_severity = Counter(log.severity for log in self._logs)
+        by_client = Counter(
+            client_id for log in self._logs for client_id in log.client_ids
+        )
 
         return f"""
         Most frequent log tags: {by_tags.most_common(3)}\n
         Log tags count: {len(by_tags)}
         Severity details: {by_severity.items()}
+        Risk zone clients: {by_client.items()}
         """
 
 
@@ -88,11 +98,10 @@ class RiscAnalyzer:
             AuditLogSeverity.HIGH: 1_000_000,
             AuditLogSeverity.MEDIUM: 350_000,
         }
-        self._TRANSACTION_TYPE_TO_ATTRIBUTE_MAPPING = {
-            TransactionType.WITHDRAW: "from_client_id"
-        }
         self._SUSPICIOUS_OP_COUNT = 10
-        self._SISPICIOUS_OP_TIME_SEC_WINDOW = 60
+        self._SUSPICIOUS_OP_TIME_SEC_WINDOW = 60
+        self._seen_recipients: dict[UUID, set[AccountId]] = {}
+        self._audited_tx_ids: set[UUID] = set()
 
     def _tx_client_ids(self, tx: Transaction) -> list[UUID]:
         return [uid for uid in [tx.from_client_id, tx.to_client_id] if uid is not None]
@@ -112,22 +121,46 @@ class RiscAnalyzer:
     def _check_frequent_operations(
         self, tx: Transaction, audit_log: AuditLog
     ) -> LogEntry | None:
-        window_delta = timedelta(seconds=self._SISPICIOUS_OP_TIME_SEC_WINDOW / 2)
-        near_logs = audit_log.search_logs(
-            created_from=tx.scheduled_at - window_delta,
-            created_to=tx.scheduled_at + window_delta,
+        window_start = tx.created_at - timedelta(
+            seconds=self._SUSPICIOUS_OP_TIME_SEC_WINDOW
         )
-        if len(near_logs) >= self._SUSPICIOUS_OP_COUNT:
-            return LogEntry(
-                severity=AuditLogSeverity.MEDIUM,
-                tx_id=tx.id,
-                message="Operation count is suspicious",
-                tags=["operation_count"],
-                client_ids=self._tx_client_ids(tx),
+        for client_id in self._tx_client_ids(tx):
+            operations = audit_log.search_logs(
+                created_from=window_start,
+                client_id=client_id,
+                tags=["transaction"],
             )
+            if len(operations) >= self._SUSPICIOUS_OP_COUNT - 1:
+                return LogEntry(
+                    severity=AuditLogSeverity.MEDIUM,
+                    tx_id=tx.id,
+                    message="Operation count is suspicious",
+                    tags=["operation_count"],
+                    client_ids=[client_id],
+                )
+        return None
 
     def _check_new_account_transfer(self, tx: Transaction) -> LogEntry | None:
-        pass
+        if (
+            tx.type is not TransactionType.TRANSFER
+            or tx.from_client_id is None
+            or tx.to_account_id is None
+            or tx.to_client_id == tx.from_client_id
+        ):
+            return None
+
+        seen = self._seen_recipients.setdefault(tx.from_client_id, set())
+        if tx.to_account_id in seen:
+            return None
+        seen.add(tx.to_account_id)
+
+        return LogEntry(
+            severity=AuditLogSeverity.MEDIUM,
+            tx_id=tx.id,
+            message="Transfer to a new account",
+            tags=["new_account"],
+            client_ids=[tx.from_client_id],
+        )
 
     def _check_operation_time(self, tx: Transaction) -> LogEntry | None:
         if (
@@ -152,6 +185,10 @@ class RiscAnalyzer:
     def audit_operation(
         self, tx: Transaction, audit_log: AuditLog
     ) -> list[LogEntry] | None:
+        if tx.id in self._audited_tx_ids:
+            return None
+        self._audited_tx_ids.add(tx.id)
+
         checks = [
             self._check_operation_time(tx),
             self._check_transaction_amount(tx),
@@ -159,8 +196,15 @@ class RiscAnalyzer:
             self._check_frequent_operations(tx, audit_log),
         ]
 
+        op_log = LogEntry(
+            severity=AuditLogSeverity.NONE,
+            tx_id=tx.id,
+            message="Operation ok",
+            tags=["transaction"],
+            client_ids=self._tx_client_ids(tx),
+        )
+
         issues = [i for i in checks if i is not None]
-        if not len(issues):
-            return
+        issues.append(op_log)
 
         return issues

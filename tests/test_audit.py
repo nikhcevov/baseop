@@ -1,0 +1,222 @@
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
+
+from baseop.audit import AuditLog, AuditLogSeverity, LogEntry, RiscAnalyzer
+from baseop.bank import AccountKind, Bank, SuspiciousOperationError
+from baseop.client import Client
+from baseop.transaction import Transaction, TransactionType
+
+
+class _DayDateTime:
+    @classmethod
+    def now(cls, _tz=None):
+        return datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def bank(monkeypatch) -> Bank:
+    monkeypatch.setattr("baseop.bank.datetime", _DayDateTime)
+    return Bank()
+
+
+@pytest.fixture
+def client(bank: Bank) -> Client:
+    client = bank.add_client(
+        first_name="Alice",
+        last_name="Smith",
+        age=30,
+        secret="secret",
+    )
+    bank.authenticate_client(client.id, "secret")
+    return client
+
+
+def _open_account(bank: Bank, client: Client) -> str:
+    return bank.open_account(client.id, AccountKind.BANK)["account_id"]
+
+
+def test_high_amount_deposit_is_blocked_and_logged(bank: Bank, client: Client) -> None:
+    account_id = _open_account(bank, client)
+
+    with pytest.raises(SuspiciousOperationError) as error:
+        bank.deposit(client.id, account_id, 1_000_000)
+
+    assert bank.search_accounts(client.id)[0]["balance"] == 0
+    assert client.suspicious is True
+    assert client.risk_profile == "HIGH"
+
+    high_entries = bank._audit_log.search_logs(severity=AuditLogSeverity.HIGH)
+    assert len(high_entries) == 1
+    assert "transaction_amount" in high_entries[0].tags
+    assert client.id in high_entries[0].client_ids
+    assert high_entries[0].tx_id in {entry.tx_id for entry in error.value.entries}
+
+
+def test_normal_operation_is_logged_without_risk_findings(
+    bank: Bank, client: Client
+) -> None:
+    account_id = _open_account(bank, client)
+
+    tx = bank.deposit(client.id, account_id, 100)
+
+    assert bank.search_accounts(client.id)[0]["balance"] == 100
+
+    entries = bank._audit_log.search_logs()
+    assert len(entries) == 1
+    assert entries[0].tx_id == tx.id
+    assert entries[0].severity is AuditLogSeverity.NONE
+    assert entries[0].tags == ["transaction"]
+    assert entries[0].client_ids == [client.id]
+    assert bank._audit_log.search_logs(severity=AuditLogSeverity.HIGH) == []
+
+
+def test_frequent_operations_are_flagged(bank: Bank, client: Client) -> None:
+    account_id = _open_account(bank, client)
+    for _ in range(9):
+        bank.deposit(client.id, account_id, 100)
+
+    assert bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM) == []
+
+    bank.deposit(client.id, account_id, 100)
+
+    findings = bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM)
+    assert len(findings) == 1
+    assert findings[0].tags == ["operation_count"]
+    assert findings[0].client_ids == [client.id]
+    assert client.suspicious is True
+    assert client.risk_profile == "MEDIUM"
+
+
+def test_frequent_operations_do_not_leak_between_clients(
+    bank: Bank, client: Client
+) -> None:
+    account_id = _open_account(bank, client)
+    for _ in range(9):
+        bank.deposit(client.id, account_id, 100)
+
+    other = bank.add_client(
+        first_name="Bob",
+        last_name="Jones",
+        age=25,
+        secret="other",
+    )
+    bank.authenticate_client(other.id, "other")
+    other_account = _open_account(bank, other)
+
+    bank.deposit(other.id, other_account, 100)
+
+    assert bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM) == []
+    assert other.suspicious is False
+    assert other.risk_profile is None
+
+
+def test_amount_findings_do_not_count_as_operations() -> None:
+    client_id = uuid4()
+    audit_log = AuditLog()
+    for _ in range(20):
+        audit_log.add(
+            LogEntry(
+                tx_id=uuid4(),
+                client_ids=[client_id],
+                severity=AuditLogSeverity.MEDIUM,
+                message="Transaction amount in danger zone",
+                tags=["transaction_amount"],
+            )
+        )
+    tx = Transaction(
+        type=TransactionType.DEPOSIT,
+        amount=10,
+        currency="RUB",
+        to_client_id=client_id,
+        to_account_id="abcdefgh",
+    )
+
+    entries = RiscAnalyzer().audit_operation(tx, audit_log)
+
+    assert entries is not None
+    assert all("operation_count" not in entry.tags for entry in entries)
+
+
+def _add_client(bank: Bank, first_name: str, secret: str) -> Client:
+    client = bank.add_client(
+        first_name=first_name,
+        last_name="Jones",
+        age=25,
+        secret=secret,
+    )
+    bank.authenticate_client(client.id, secret)
+    return client
+
+
+def test_transfer_to_new_account_is_flagged_once(bank: Bank, client: Client) -> None:
+    sender = _open_account(bank, client)
+    other = _add_client(bank, "Bob", "other")
+    recipient = _open_account(bank, other)
+
+    bank.submit_transfer(client.id, sender, 10, to_account_id=recipient)
+
+    findings = [
+        entry
+        for entry in bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM)
+        if "new_account" in entry.tags
+    ]
+    assert len(findings) == 1
+    assert findings[0].client_ids == [client.id]
+    assert client.suspicious is True
+    assert client.risk_profile == "MEDIUM"
+
+    bank.submit_transfer(client.id, sender, 10, to_account_id=recipient)
+
+    findings = [
+        entry
+        for entry in bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM)
+        if "new_account" in entry.tags
+    ]
+    assert len(findings) == 1
+
+
+def test_transfer_between_own_accounts_is_not_flagged(
+    bank: Bank, client: Client
+) -> None:
+    first = _open_account(bank, client)
+    second = _open_account(bank, client)
+
+    bank.submit_transfer(client.id, first, 10, to_account_id=second)
+
+    assert bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM) == []
+
+
+def test_external_transfer_is_not_flagged_as_new_account(
+    bank: Bank, client: Client
+) -> None:
+    sender = _open_account(bank, client)
+
+    bank.submit_transfer(client.id, sender, 10, external_destination="EXTERNAL-ACC")
+
+    assert bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM) == []
+
+
+def test_operation_is_audited_only_once(bank: Bank, client: Client) -> None:
+    account_id = _open_account(bank, client)
+    tx = bank.deposit(client.id, account_id, 100)
+
+    before = bank._audit_log.search_logs()
+    assert len(before) == 1
+
+    bank._audit(tx)
+
+    assert bank._audit_log.search_logs() == before
+
+
+def test_repeated_audit_does_not_inflate_frequency(bank: Bank, client: Client) -> None:
+    account_id = _open_account(bank, client)
+    tx = bank.deposit(client.id, account_id, 100)
+
+    for _ in range(20):
+        bank._audit(tx)
+
+    bank.deposit(client.id, account_id, 100)
+
+    assert bank._audit_log.search_logs(severity=AuditLogSeverity.MEDIUM) == []
