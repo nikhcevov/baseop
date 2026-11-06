@@ -1,4 +1,3 @@
-from collections import Counter
 from datetime import datetime, time
 from enum import StrEnum
 from math import isclose
@@ -17,8 +16,8 @@ from baseop.account import (
     PremiumAccount,
     SavingsAccount,
 )
-from baseop.audit import AuditLog, RiscAnalyzer
-from baseop.client import Client, ClientStatus
+from baseop.audit import AuditLog, AuditLogSeverity, LogEntry, RiscAnalyzer
+from baseop.client import Client, ClientRisk, ClientStatus
 from baseop.config import APP_TIMEZONE, Currency
 from baseop.transaction import (
     Transaction,
@@ -72,6 +71,23 @@ class WorkingHoursError(BankError):
 
 class ClientInactiveError(BankError):
     pass
+
+
+class SuspiciousOperationError(BankError):
+    def __init__(self, message: str, entries: list[LogEntry]) -> None:
+        super().__init__(message)
+        self.entries = entries
+
+
+_SEVERITY_TO_RISK: dict[AuditLogSeverity, ClientRisk | None] = {
+    AuditLogSeverity.NONE: None,
+    AuditLogSeverity.LOW: "LOW",
+    AuditLogSeverity.MEDIUM: "MEDIUM",
+    AuditLogSeverity.HIGH: "HIGH",
+}
+_RISK_ORDER: dict[ClientRisk, int] = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+_HIGH_RISK_BLOCK_LIMIT = 3
+"""High severity findings a client may collect before being blocked"""
 
 
 class Bank:
@@ -199,13 +215,58 @@ class Bank:
         self._add_account_id(client_id, account_id)
         return account.get_account_info()
 
-    def _audit(self, tx: Transaction) -> None:
-        logs = self._risk_analyzer.audit_operation(tx, self._audit_log)
+    @staticmethod
+    def _affected_client_ids(tx: Transaction) -> list[UUID]:
+        client_ids: list[UUID] = []
+        for client_id in (tx.from_client_id, tx.to_client_id):
+            if client_id is not None and client_id not in client_ids:
+                client_ids.append(client_id)
+        return client_ids
 
-        if not logs or not len(logs):
+    def _set_risk_profile(self, client_id: UUID, severity: AuditLogSeverity) -> None:
+        risk = _SEVERITY_TO_RISK[severity]
+        if risk is None:
             return
 
-        counts = Counter(log.severity for log in logs)
+        client = self._require_client(client_id)
+        current = client.risk_profile
+        if current is None or _RISK_ORDER[risk] > _RISK_ORDER[current]:
+            object.__setattr__(client, "risk_profile", risk)
+
+        if severity >= AuditLogSeverity.MEDIUM:
+            self._mark_suspicious(client_id)
+
+    def _block_if_high_risk_repeats(self, client_id: UUID) -> None:
+        high_entries = [
+            entry
+            for entry in self._audit_log.search_logs(severity=AuditLogSeverity.HIGH)
+            if client_id in entry.client_ids
+        ]
+        if len(high_entries) < _HIGH_RISK_BLOCK_LIMIT:
+            return
+
+        self._set_status(client_id, ClientStatus.BLOCKED)
+        self._authenticated.discard(client_id)
+
+    def _audit(self, tx: Transaction) -> None:
+        entries = self._risk_analyzer.audit_operation(tx, self._audit_log)
+        if not entries:
+            return
+
+        for entry in entries:
+            self._audit_log.add(entry)
+
+        severity = max(entry.severity for entry in entries)
+        client_ids = self._affected_client_ids(tx)
+        for client_id in client_ids:
+            self._set_risk_profile(client_id, severity)
+
+        if severity is AuditLogSeverity.HIGH:
+            for client_id in client_ids:
+                self._block_if_high_risk_repeats(client_id)
+            raise SuspiciousOperationError(
+                "Operation blocked by risk analyzer", entries
+            )
 
     @validate_call
     def deposit(
