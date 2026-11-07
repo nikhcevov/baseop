@@ -115,6 +115,7 @@ class Bank:
         self._audit_log = AuditLog()
         self._risk_analyzer = RiscAnalyzer()
         self._error_stats: Counter[str] = Counter()
+        self._high_risk_counts: Counter[UUID] = Counter()
 
     def _validate_op_time(self) -> None:
         now = datetime.now(APP_TIMEZONE)
@@ -264,28 +265,18 @@ class Bank:
         if severity >= AuditLogSeverity.MEDIUM:
             self._mark_suspicious(client_id)
 
-    def _block_if_high_risk_repeats(self, client_id: UUID) -> None:
-        high_entries = [
-            entry
-            for entry in self._audit_log.search_logs(severity=AuditLogSeverity.HIGH)
-            if client_id in entry.client_ids
-        ]
-        if len(high_entries) < _HIGH_RISK_BLOCK_LIMIT:
-            return
-
-        self._set_status(client_id, ClientStatus.BLOCKED)
-        self._authenticated.discard(client_id)
-
     def _audit(self, tx: Transaction) -> list[LogEntry]:
         entries = self._risk_analyzer.audit_operation(tx, self._audit_log) or []
         for entry in entries:
             self._audit_log.add(entry)
 
-        severity = max(
-            (entry.severity for entry in entries),
-            default=AuditLogSeverity.NONE,
-        )
-        for client_id in self._affected_client_ids(tx):
+        severities: dict[UUID, AuditLogSeverity] = {}
+        for entry in entries:
+            for client_id in entry.client_ids:
+                current = severities.get(client_id, AuditLogSeverity.NONE)
+                severities[client_id] = max(current, entry.severity)
+
+        for client_id, severity in severities.items():
             self._set_risk_profile(client_id, severity)
 
         return entries
@@ -298,8 +289,13 @@ class Bank:
         if severity is not AuditLogSeverity.HIGH:
             return
 
-        for client_id in self._affected_client_ids(tx):
-            self._block_if_high_risk_repeats(client_id)
+        initiator_id = tx.from_client_id or tx.to_client_id
+        if initiator_id is not None:
+            self._high_risk_counts[initiator_id] += 1
+            if self._high_risk_counts[initiator_id] >= _HIGH_RISK_BLOCK_LIMIT:
+                self._set_status(initiator_id, ClientStatus.BLOCKED)
+                self._authenticated.discard(initiator_id)
+
         raise SuspiciousOperationError("Operation blocked by risk analyzer", entries)
 
     @validate_call

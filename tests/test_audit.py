@@ -419,6 +419,25 @@ def test_night_high_amount_is_refused_by_hours(
     assert bank.search_accounts(client.id)[0]["balance"] == 0
 
 
+def test_high_risk_transfer_does_not_mark_recipient(bank: Bank, client: Client) -> None:
+    sender = _open_account(bank, client)
+    other = _add_client(bank, "Bob", "other")
+    recipient = _open_account(bank, other)
+
+    for _ in range(3):
+        with pytest.raises(SuspiciousOperationError):
+            bank.submit_transfer(client.id, sender, 1_000_000, to_account_id=recipient)
+
+    assert client.status is ClientStatus.BLOCKED
+    assert other.status is ClientStatus.ACTIVE
+    assert other.suspicious is False
+    assert other.risk_profile is None
+
+    high_entries = bank._audit_log.search_logs(severity=AuditLogSeverity.HIGH)
+    assert len(high_entries) == 3
+    assert all(entry.client_ids == [client.id] for entry in high_entries)
+
+
 @pytest.mark.parametrize(
     ("amount", "expected"),
     [

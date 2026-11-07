@@ -116,14 +116,21 @@ class RiscAnalyzer:
     def _tx_client_ids(self, tx: Transaction) -> list[UUID]:
         return [uid for uid in [tx.from_client_id, tx.to_client_id] if uid is not None]
 
+    def _initiator_id(self, tx: Transaction) -> UUID | None:
+        return tx.from_client_id or tx.to_client_id
+
     def _check_transaction_amount(self, tx: Transaction) -> LogEntry | None:
+        initiator_id = self._initiator_id(tx)
+        if initiator_id is None:
+            return None
+
         rub_equivalent = convert(tx.amount, tx.currency, "RUB")
         for severity in sorted(self._RUB_TO_RISK_MAPPING, reverse=True):
             if rub_equivalent >= self._RUB_TO_RISK_MAPPING[severity]:
                 return LogEntry(
                     severity=severity,
                     tx_id=tx.id,
-                    client_ids=self._tx_client_ids(tx),
+                    client_ids=[initiator_id],
                     message="Transaction amount in danger zone",
                     tags=["transaction_amount"],
                 )
@@ -173,6 +180,10 @@ class RiscAnalyzer:
         )
 
     def _check_operation_time(self, tx: Transaction) -> LogEntry | None:
+        initiator_id = self._initiator_id(tx)
+        if initiator_id is None:
+            return None
+
         if is_within_window(
             tx.scheduled_at, self._SUSPICIOUS_TIME_START, self._SUSPICIOUS_TIME_END
         ):
@@ -181,7 +192,7 @@ class RiscAnalyzer:
                 tx_id=tx.id,
                 message="Operation time in danger zone",
                 tags=["operation_time"],
-                client_ids=self._tx_client_ids(tx),
+                client_ids=[initiator_id],
             )
 
     def audit_operation(
