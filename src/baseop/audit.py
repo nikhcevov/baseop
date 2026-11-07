@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from baseop.config import APP_TIMEZONE, convert
+from baseop.config import APP_TIMEZONE, convert, is_within_window
 from baseop.transaction import Transaction, TransactionType
 from baseop.uuid import AccountId
 
@@ -102,8 +102,8 @@ class AuditLog:
 
 class RiscAnalyzer:
     def __init__(self) -> None:
-        self._SUSPICIOUS_TIME_START = time(5, tzinfo=APP_TIMEZONE)
-        self._SUSPICIOUS_TIME_END = time(8, tzinfo=APP_TIMEZONE)
+        self._SUSPICIOUS_TIME_START = time(0, tzinfo=APP_TIMEZONE)
+        self._SUSPICIOUS_TIME_END = time(5, tzinfo=APP_TIMEZONE)
         self._RUB_TO_RISK_MAPPING = {
             AuditLogSeverity.HIGH: 1_000_000,
             AuditLogSeverity.MEDIUM: 350_000,
@@ -173,19 +173,11 @@ class RiscAnalyzer:
         )
 
     def _check_operation_time(self, tx: Transaction) -> LogEntry | None:
-        if (
-            self._SUSPICIOUS_TIME_START
-            <= time(
-                tx.scheduled_at.hour,
-                tx.scheduled_at.minute,
-                tx.scheduled_at.second,
-                tx.scheduled_at.microsecond,
-                tzinfo=APP_TIMEZONE,
-            )
-            <= self._SUSPICIOUS_TIME_END
+        if is_within_window(
+            tx.scheduled_at, self._SUSPICIOUS_TIME_START, self._SUSPICIOUS_TIME_END
         ):
             return LogEntry(
-                severity=AuditLogSeverity.LOW,
+                severity=AuditLogSeverity.MEDIUM,
                 tx_id=tx.id,
                 message="Operation time in danger zone",
                 tags=["operation_time"],
@@ -206,15 +198,6 @@ class RiscAnalyzer:
             self._check_frequent_operations(tx, audit_log),
         ]
 
-        op_log = LogEntry(
-            severity=AuditLogSeverity.NONE,
-            tx_id=tx.id,
-            message="Operation ok",
-            tags=["transaction"],
-            client_ids=self._tx_client_ids(tx),
-        )
+        issues = [issue for issue in checks if issue is not None]
 
-        issues = [i for i in checks if i is not None]
-        issues.append(op_log)
-
-        return issues
+        return issues or None

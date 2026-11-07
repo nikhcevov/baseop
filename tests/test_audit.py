@@ -12,6 +12,7 @@ from baseop.bank import (
     Bank,
     ClientInactiveError,
     SuspiciousOperationError,
+    WorkingHoursError,
 )
 from baseop.client import Client, ClientStatus
 from baseop.transaction import Transaction, TransactionStatus, TransactionType
@@ -24,6 +25,12 @@ class _DayDateTime:
 
 
 class _NightDateTime:
+    @classmethod
+    def now(cls, _tz=None):
+        return datetime(2026, 1, 1, 3, 0, tzinfo=UTC)
+
+
+class _MorningDateTime:
     @classmethod
     def now(cls, _tz=None):
         return datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
@@ -149,8 +156,7 @@ def test_amount_findings_do_not_count_as_operations() -> None:
 
     entries = RiscAnalyzer().audit_operation(tx, audit_log)
 
-    assert entries is not None
-    assert all("operation_count" not in entry.tags for entry in entries)
+    assert entries is None
 
 
 def _add_client(bank: Bank, first_name: str, secret: str) -> Client:
@@ -367,24 +373,50 @@ def test_error_stats_count_failed_queued_transfer(bank: Bank, client: Client) ->
     assert bank.get_error_stats() == {"Withdrawal amount is larger than balance.": 1}
 
 
-def test_night_operation_is_flagged(monkeypatch) -> None:
+def test_night_attempt_is_recorded_and_refused(
+    bank: Bank, client: Client, monkeypatch
+) -> None:
+    account_id = _open_account(bank, client)
     monkeypatch.setattr("baseop.bank.datetime", _NightDateTime)
     monkeypatch.setattr("baseop.transaction.datetime", _NightDateTime)
-    bank = Bank()
-    client = bank.add_client(
-        first_name="Alice",
-        last_name="Smith",
-        age=30,
-        secret="secret",
-    )
-    bank.authenticate_client(client.id, "secret")
+
+    with pytest.raises(WorkingHoursError):
+        bank.deposit(client.id, account_id, 100)
+
+    assert bank.search_accounts(client.id)[0]["balance"] == 0
+    assert [
+        (entry.severity, entry.tags) for entry in bank._audit_log.search_logs()
+    ] == [(AuditLogSeverity.MEDIUM, ["operation_time"])]
+    assert client.suspicious is True
+    assert bank._audit_log.search_logs(tags=["transaction"]) == []
+
+
+def test_morning_operation_is_not_flagged(
+    bank: Bank, client: Client, monkeypatch
+) -> None:
     account_id = _open_account(bank, client)
+    monkeypatch.setattr("baseop.bank.datetime", _MorningDateTime)
+    monkeypatch.setattr("baseop.transaction.datetime", _MorningDateTime)
 
     bank.deposit(client.id, account_id, 100)
 
-    findings = bank._audit_log.search_logs(severity=AuditLogSeverity.LOW)
-    assert len(findings) == 1
-    assert findings[0].tags == ["operation_time"]
+    assert [
+        (entry.severity, entry.tags) for entry in bank._audit_log.search_logs()
+    ] == [(AuditLogSeverity.NONE, ["transaction"])]
+    assert client.suspicious is False
+
+
+def test_night_high_amount_is_refused_by_hours(
+    bank: Bank, client: Client, monkeypatch
+) -> None:
+    account_id = _open_account(bank, client)
+    monkeypatch.setattr("baseop.bank.datetime", _NightDateTime)
+    monkeypatch.setattr("baseop.transaction.datetime", _NightDateTime)
+
+    with pytest.raises(WorkingHoursError):
+        bank.deposit(client.id, account_id, 1_000_000)
+
+    assert bank.search_accounts(client.id)[0]["balance"] == 0
 
 
 @pytest.mark.parametrize(

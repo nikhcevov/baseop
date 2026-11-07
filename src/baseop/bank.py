@@ -19,7 +19,7 @@ from baseop.account import (
 )
 from baseop.audit import AuditLog, AuditLogSeverity, LogEntry, RiscAnalyzer
 from baseop.client import Client, ClientRisk, ClientStatus
-from baseop.config import APP_TIMEZONE, Currency
+from baseop.config import APP_TIMEZONE, Currency, is_within_window
 from baseop.transaction import (
     Transaction,
     TransactionPriority,
@@ -44,6 +44,10 @@ _ACCOUNT_KIND_FACTORY: dict[AccountKind, type[AbstractAccount]] = {
     AccountKind.PREMIUM: PremiumAccount,
     AccountKind.SAVING: SavingsAccount,
 }
+
+
+_CLOSED_FROM = time(0, tzinfo=APP_TIMEZONE)
+_CLOSED_TO = time(5, tzinfo=APP_TIMEZONE)
 
 
 class BankError(Exception):
@@ -113,10 +117,9 @@ class Bank:
         self._error_stats: Counter[str] = Counter()
 
     def _validate_op_time(self) -> None:
-        bank_start = time(5, 0, 0)
-        now = datetime.now(APP_TIMEZONE).astimezone(APP_TIMEZONE).time()
-        if now < bank_start:
-            raise WorkingHoursError("Bank working hours 05:00 to 00:00")
+        now = datetime.now(APP_TIMEZONE)
+        if is_within_window(now, _CLOSED_FROM, _CLOSED_TO):
+            raise WorkingHoursError("Bank is closed from 00:00 to 05:00")
 
     def _require_client(self, client_id: UUID) -> Client:
         client = self._clients.get(client_id)
@@ -159,6 +162,17 @@ class Bank:
     def _record_error(self, tx: Transaction) -> None:
         self._error_stats[tx.fail_reason or "unknown"] += 1
 
+    def _record_operation(self, tx: Transaction) -> None:
+        self._audit_log.add(
+            LogEntry(
+                severity=AuditLogSeverity.NONE,
+                tx_id=tx.id,
+                message="Operation completed",
+                tags=["transaction"],
+                client_ids=self._affected_client_ids(tx),
+            )
+        )
+
     def _execute_sync(self, tx: Transaction) -> None:
         """Executes transaction immediately, propagates its failure"""
         self._processor.process_one(tx, self._accounts)
@@ -167,6 +181,8 @@ class Bank:
             if tx.failure is not None:
                 raise tx.failure
             raise BankError(tx.fail_reason or "Transaction failed")
+
+        self._record_operation(tx)
 
     @validate_call
     def add_client(
@@ -260,25 +276,31 @@ class Bank:
         self._set_status(client_id, ClientStatus.BLOCKED)
         self._authenticated.discard(client_id)
 
-    def _audit(self, tx: Transaction) -> None:
-        entries = self._risk_analyzer.audit_operation(tx, self._audit_log)
-        if not entries:
-            return
-
+    def _audit(self, tx: Transaction) -> list[LogEntry]:
+        entries = self._risk_analyzer.audit_operation(tx, self._audit_log) or []
         for entry in entries:
             self._audit_log.add(entry)
 
-        severity = max(entry.severity for entry in entries)
-        client_ids = self._affected_client_ids(tx)
-        for client_id in client_ids:
+        severity = max(
+            (entry.severity for entry in entries),
+            default=AuditLogSeverity.NONE,
+        )
+        for client_id in self._affected_client_ids(tx):
             self._set_risk_profile(client_id, severity)
 
-        if severity is AuditLogSeverity.HIGH:
-            for client_id in client_ids:
-                self._block_if_high_risk_repeats(client_id)
-            raise SuspiciousOperationError(
-                "Operation blocked by risk analyzer", entries
-            )
+        return entries
+
+    def _enforce_risk(self, tx: Transaction, entries: list[LogEntry]) -> None:
+        severity = max(
+            (entry.severity for entry in entries),
+            default=AuditLogSeverity.NONE,
+        )
+        if severity is not AuditLogSeverity.HIGH:
+            return
+
+        for client_id in self._affected_client_ids(tx):
+            self._block_if_high_risk_repeats(client_id)
+        raise SuspiciousOperationError("Operation blocked by risk analyzer", entries)
 
     @validate_call
     def deposit(
@@ -287,7 +309,6 @@ class Bank:
         account_id: AccountId,
         amount: Annotated[float, Field(gt=0, strict=True)],
     ) -> Transaction:
-        self._validate_op_time()
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
@@ -300,7 +321,9 @@ class Bank:
             to_account_id=account.account_id,
         )
 
-        self._audit(tx)
+        entries = self._audit(tx)
+        self._validate_op_time()
+        self._enforce_risk(tx, entries)
         self._execute_sync(tx)
         return tx
 
@@ -311,7 +334,6 @@ class Bank:
         account_id: AccountId,
         amount: Annotated[float, Field(gt=0, strict=True)],
     ) -> Transaction:
-        self._validate_op_time()
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
@@ -324,7 +346,9 @@ class Bank:
             from_account_id=account.account_id,
         )
 
-        self._audit(tx)
+        entries = self._audit(tx)
+        self._validate_op_time()
+        self._enforce_risk(tx, entries)
         self._execute_sync(tx)
         return tx
 
@@ -338,7 +362,6 @@ class Bank:
         to_account_id: AccountId | None = None,
         external_destination: str | None = None,
     ) -> Transaction:
-        self._validate_op_time()
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
@@ -359,7 +382,9 @@ class Bank:
             to_client_id=recipient.user.id if recipient else None,
             external_destination=external_destination,
         )
-        self._audit(tx)
+        entries = self._audit(tx)
+        self._validate_op_time()
+        self._enforce_risk(tx, entries)
         self._queue.add(tx, TransactionPriority.MEDIUM)
         return tx
 
@@ -378,7 +403,9 @@ class Bank:
         self._validate_op_time()
         processed = self._processor.run_pending(self._queue, self._accounts)
         for tx in processed:
-            if tx.status is TransactionStatus.FAILED:
+            if tx.status is TransactionStatus.COMPLETED:
+                self._record_operation(tx)
+            elif tx.status is TransactionStatus.FAILED:
                 self._record_error(tx)
         return processed
 

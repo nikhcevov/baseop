@@ -1,8 +1,21 @@
-from datetime import UTC
+from datetime import UTC, datetime, time
 from typing import Literal
 
 APP_TIMEZONE = UTC
 """Intentional assumption"""
+
+
+def is_within_window(moment: datetime, start: time, end: time) -> bool:
+    """Checks moment falls into half-open [start, end) window in APP_TIMEZONE.
+
+    Window wraps past midnight when start > end, so 23:00-05:00 covers
+    both late evening and early morning.
+    """
+    current = moment.astimezone(APP_TIMEZONE).timetz()
+    if start <= end:
+        return start <= current < end
+    return current >= start or current < end
+
 
 Currency = Literal["RUB", "USD", "EUR", "KZT", "CNY"]
 

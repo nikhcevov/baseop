@@ -127,18 +127,36 @@ def test_account_operations_are_scoped_to_owner(bank: Bank):
         bank.deposit(bob.id, account["account_id"], 50)
 
 
-def test_night_operations_are_blocked(bank: Bank, client: Client, monkeypatch):
+@pytest.mark.parametrize(
+    ("hour", "minute", "blocked"),
+    [(0, 0, True), (2, 0, True), (4, 59, True), (5, 0, False)],
+)
+def test_working_hours_boundaries(
+    bank: Bank,
+    client: Client,
+    monkeypatch,
+    hour: int,
+    minute: int,
+    blocked: bool,
+):
     account = bank.open_account(client.id, AccountKind.BANK)
 
-    class _NightDateTime:
+    class _Clock:
         @classmethod
         def now(cls, _tz=None):
-            return datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+            return datetime(2026, 1, 1, hour, minute, tzinfo=UTC)
 
-    monkeypatch.setattr("baseop.bank.datetime", _NightDateTime)
+    monkeypatch.setattr("baseop.bank.datetime", _Clock)
 
-    with pytest.raises(WorkingHoursError):
-        bank.deposit(client.id, account["account_id"], 10)
+    if blocked:
+        with pytest.raises(WorkingHoursError):
+            bank.deposit(client.id, account["account_id"], 10)
+        return
+
+    assert (
+        bank.deposit(client.id, account["account_id"], 10).status
+        is TransactionStatus.COMPLETED
+    )
 
 
 def test_failed_login_marks_client_suspicious(bank: Bank):
