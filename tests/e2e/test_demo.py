@@ -3,9 +3,9 @@
 Run with output: ``pytest -s tests/e2e/test_demo.py``.
 
 Seven clients and twelve accounts are created through the public ``Bank``
-facade, then 41 operations are executed one by one. No mocks and no wall
-clock: time comes from an injected ``FrozenClock``, so balances, audit
-counts and reports are identical on every run.
+facade, then 42 operation attempts are executed one by one. No mocks and
+no wall clock: time comes from an injected ``FrozenClock``, so balances,
+audit counts and reports are identical on every run.
 """
 
 from collections import Counter
@@ -23,6 +23,7 @@ from baseop.audit import AuditLogSeverity
 from baseop.bank import (
     AccountKind,
     Bank,
+    BankEventKind,
     ClientInactiveError,
     SuspiciousOperationError,
     WorkingHoursError,
@@ -118,10 +119,10 @@ def test_demo_scenario(
     bank.deposit(grace.id, grace_bank, 10_000)
 
     # --- internal transfers --------------------------------------------
-    _settle(
-        bank,
-        bank.submit_transfer(alice.id, alice_bank, 500, to_account_id=bob_bank),
+    first_transfer = bank.submit_transfer(
+        alice.id, alice_bank, 500, to_account_id=bob_bank
     )
+    _settle(bank, first_transfer)
     _settle(
         bank,
         bank.submit_transfer(bob.id, bob_bank, 300, to_account_id=carol_bank),
@@ -188,16 +189,12 @@ def test_demo_scenario(
     assert bank.run_transactions() == []
 
     # --- suspicious operations: high amounts block the client -----------
-    risk_rejections = 0
     with pytest.raises(SuspiciousOperationError):
         bank.submit_transfer(dave.id, dave_bank, 1_000_000, to_account_id=grace_bank)
-    risk_rejections += 1
     with pytest.raises(SuspiciousOperationError):
         bank.submit_transfer(dave.id, dave_bank, 1_000_000, to_account_id=grace_bank)
-    risk_rejections += 1
     with pytest.raises(SuspiciousOperationError):
         bank.submit_transfer(dave.id, dave_bank, 1_000_000, to_account_id=grace_bank)
-    risk_rejections += 1
 
     assert dave.status is ClientStatus.BLOCKED
     with pytest.raises(ClientInactiveError):
@@ -205,13 +202,10 @@ def test_demo_scenario(
 
     # --- night operations are audited and refused -----------------------
     clock.set(night)
-    hours_rejections = 0
     with pytest.raises(WorkingHoursError):
         bank.deposit(alice.id, alice_bank, 1_000_000)
-    hours_rejections += 1
     with pytest.raises(WorkingHoursError):
         bank.deposit(bob.id, bob_bank, 10)
-    hours_rejections += 1
     clock.set(day)
 
     # --- burst of small operations triggers the frequency check ---------
@@ -241,21 +235,37 @@ def test_demo_scenario(
     severity = {level: counts[level] for level in AuditLogSeverity}
     completed_count = severity[AuditLogSeverity.NONE]
     failed_count = sum(bank.get_error_stats().values())
-    cancelled_count = 1
-    attempted = (
-        completed_count
-        + failed_count
-        + cancelled_count
-        + risk_rejections
-        + hours_rejections
-    )
+
+    stats = bank.get_transaction_stats()
+    event_counts = {kind: len(bank.get_events(kind=kind)) for kind in BankEventKind}
+    attempted = stats["total"]
 
     assert len(clients) == 7
     assert len(accounts) == 12
     assert 30 <= attempted <= 50
-    assert attempted == 41
+    assert attempted == 42
     assert completed_count == 31
     assert failed_count == 4
+
+    assert stats == {
+        "queued": 0,
+        "completed": 31,
+        "failed": 4,
+        "cancelled": 1,
+        "rejected": 6,
+        "total": 42,
+    }
+    assert {kind.value: count for kind, count in event_counts.items()} == {
+        "queued": 12,
+        "completed": 31,
+        "failed": 4,
+        "cancelled": 1,
+        "rejected": 6,
+    }
+    assert [event.kind for event in bank.get_events(tx_id=first_transfer.id)] == [
+        BankEventKind.QUEUED,
+        BankEventKind.COMPLETED,
+    ]
 
     assert bank.get_total_balance() == 31_396.0
     assert bank.get_error_stats() == {
@@ -306,32 +316,86 @@ def test_demo_scenario(
     bob_accounts = {info["account_id"]: info for info in bank.search_accounts(bob.id)}
     assert bob_accounts[bob_savings]["account_status"] is AccountStatus.CLOSED
 
+    # --- user scenarios --------------------------------------------------
+    alice_accounts = bank.get_client_accounts(alice.id)
+    alice_transactions = bank.get_client_transactions(alice.id)
+    alice_history = bank.get_client_history(alice.id)
+    alice_suspicious = bank.get_suspicious_operations(client_id=alice.id)
+
+    assert len(alice_accounts) == 3
+    assert len(alice_transactions) == 10
+    assert len(alice_history) == 12
+    assert len(alice_suspicious) == 4
+
+    rejections = [
+        (names[event.client_id] if event.client_id else None, event.reason)
+        for event in bank.get_events(kind=BankEventKind.REJECTED)
+    ]
+    assert rejections == [
+        ("Dave", "risk analyzer"),
+        ("Dave", "risk analyzer"),
+        ("Dave", "risk analyzer"),
+        ("Dave", "client inactive"),
+        ("Alice", "closed hours"),
+        ("Bob", "closed hours"),
+    ]
+
+    # --- reports ---------------------------------------------------------
+    top3 = list(ranking.items())[:3]
+    assert top3 == [("Alice", 8_997.0), ("Grace", 8_955.0), ("Dave", 4_900.0)]
+
     # --- deterministic report -------------------------------------------
+    account_labels = {account_id: label for label, account_id in accounts.items()}
     print()
     print("=== baseop demo ===")
+    print(f"clients: {len(clients)}, accounts: {len(accounts)}")
+    print(f"operations attempted: {attempted}")
+    print()
+    print("[logging]")
     print(
-        f"clients: {len(clients)}, accounts: {len(accounts)}, "
-        f"transactions attempted: {attempted}"
+        "  events: "
+        + ", ".join(f"{kind.value}={event_counts[kind]}" for kind in BankEventKind)
     )
-    print(
-        f"completed: {completed_count}, failed: {failed_count}, "
-        f"cancelled: {cancelled_count}, risk rejections: {risk_rejections}, "
-        f"closed-hours rejections: {hours_rejections}"
-    )
-    print(f"total balance: {bank.get_total_balance():.2f}")
-    print("client ranking:")
-    for name, total in ranking.items():
-        print(f"  {name:<6} {total:>9.2f}")
-    print("risk profiles:")
+    lifecycle = [
+        event.kind.value for event in bank.get_events(tx_id=first_transfer.id)
+    ]
+    print(f"  first transfer lifecycle: {lifecycle}")
+    print("  rejections:")
+    for client_name, reason in rejections:
+        print(f"    {client_name}: {reason}")
+    print()
+    print("[client scenario: Alice]")
+    print("  accounts:")
+    for info in alice_accounts:
+        label = account_labels[info["account_id"]]
+        print(
+            f"    {label:<14} {info['balance']:>8.2f} "
+            f"{info['account_status'].value}"
+        )
+    print(f"  transactions: {len(alice_transactions)}")
+    print(f"  history entries: {len(alice_history)}")
+    for entry in alice_history[-3:]:
+        print(f"    {entry.severity.name:<6} {'/'.join(entry.tags)}")
+    print(f"  suspicious entries: {len(alice_suspicious)}")
+    print()
+    print("[reports]")
+    print("  top-3 clients:")
+    for name, total in top3:
+        print(f"    {name:<6} {total:>9.2f}")
+    print(f"  transaction stats: {stats}")
+    print(f"  total balance: {bank.get_total_balance():.2f}")
+    print("  risk profiles:")
     for name, (profile, suspicious) in risk.items():
-        print(f"  {name:<6} risk={profile:<6} suspicious={suspicious}")
-    print("error stats:")
+        print(f"    {name:<6} risk={profile:<6} suspicious={suspicious}")
+    print("  error stats:")
     for reason, count in bank.get_error_stats().items():
-        print(f"  {count}x {reason}")
-    print("audit log:")
+        print(f"    {count}x {reason}")
+    print("  audit log:")
     print(
-        "  severity: "
-        + ", ".join(f"{level.name}={severity[level]}" for level in AuditLogSeverity)
+        "    severity: "
+        + ", ".join(
+            f"{level.name}={severity[level]}" for level in AuditLogSeverity
+        )
     )
     tags = Counter(tag for entry in logs for tag in entry.tags)
-    print(f"  tags: {dict(sorted(tags.items()))}")
+    print(f"    tags: {dict(sorted(tags.items()))}")

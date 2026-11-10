@@ -1,11 +1,11 @@
 from collections import Counter
-from datetime import time
+from datetime import datetime, time
 from enum import StrEnum
 from math import isclose
 from typing import Annotated, TypedDict
 from uuid import UUID, uuid4
 
-from pydantic import Field, validate_call
+from pydantic import BaseModel, ConfigDict, Field, validate_call
 
 from baseop.account import (
     AbstractAccount,
@@ -85,6 +85,24 @@ class SuspiciousOperationError(BankError):
         self.entries = entries
 
 
+class BankEventKind(StrEnum):
+    QUEUED = "queued"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    REJECTED = "rejected"
+
+
+class BankEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: BankEventKind
+    created_at: datetime
+    client_id: UUID | None = None
+    tx_id: UUID | None = None
+    reason: str | None = None
+
+
 class ClientRiskReport(TypedDict):
     risk_profile: ClientRisk | None
     suspicious: bool
@@ -118,10 +136,42 @@ class Bank:
         self._risk_analyzer = RiscAnalyzer(clock=clock)
         self._error_stats: Counter[str] = Counter()
         self._high_risk_counts: Counter[UUID] = Counter()
+        self._transactions: dict[UUID, Transaction] = {}
+        self._events: list[BankEvent] = []
 
-    def _validate_op_time(self) -> None:
+    def _register(self, tx: Transaction) -> None:
+        self._transactions[tx.id] = tx
+
+    def _emit(
+        self,
+        kind: BankEventKind,
+        *,
+        client_id: UUID | None = None,
+        tx: Transaction | None = None,
+        reason: str | None = None,
+    ) -> None:
+        self._events.append(
+            BankEvent(
+                kind=kind,
+                created_at=self._clock(),
+                client_id=client_id,
+                tx_id=None if tx is None else tx.id,
+                reason=reason,
+            )
+        )
+
+    @staticmethod
+    def _initiator(tx: Transaction) -> UUID | None:
+        return tx.from_client_id or tx.to_client_id
+
+    def _validate_op_time(self, client_id: UUID | None = None) -> None:
         now = self._clock()
         if is_within_window(now, _CLOSED_FROM, _CLOSED_TO):
+            self._emit(
+                BankEventKind.REJECTED,
+                client_id=client_id,
+                reason="closed hours",
+            )
             raise WorkingHoursError("Bank is closed from 00:00 to 05:00")
 
     def _require_client(self, client_id: UUID) -> Client:
@@ -133,6 +183,11 @@ class Bank:
     def _validate_client_status(self, client_id: UUID):
         client = self._require_client(client_id)
         if client.status != ClientStatus.ACTIVE:
+            self._emit(
+                BankEventKind.REJECTED,
+                client_id=client_id,
+                reason="client inactive",
+            )
             raise ClientInactiveError("Client inactive")
 
     @validate_call
@@ -182,11 +237,22 @@ class Bank:
         self._processor.process_one(tx, self._accounts)
         if tx.status is TransactionStatus.FAILED:
             self._record_error(tx)
+            self._emit(
+                BankEventKind.FAILED,
+                client_id=self._initiator(tx),
+                tx=tx,
+                reason=tx.fail_reason,
+            )
             if tx.failure is not None:
                 raise tx.failure
             raise BankError(tx.fail_reason or "Transaction failed")
 
         self._record_operation(tx)
+        self._emit(
+            BankEventKind.COMPLETED,
+            client_id=self._initiator(tx),
+            tx=tx,
+        )
 
     @validate_call
     def add_client(
@@ -217,7 +283,7 @@ class Bank:
         kind: AccountKind,
         currency: Currency = "RUB",
     ) -> AccountInfo:
-        self._validate_op_time()
+        self._validate_op_time(client_id)
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
@@ -299,6 +365,12 @@ class Bank:
                 self._set_status(initiator_id, ClientStatus.BLOCKED)
                 self._authenticated.discard(initiator_id)
 
+        self._emit(
+            BankEventKind.REJECTED,
+            client_id=initiator_id,
+            tx=tx,
+            reason="risk analyzer",
+        )
         raise SuspiciousOperationError("Operation blocked by risk analyzer", entries)
 
     @validate_call
@@ -324,8 +396,9 @@ class Bank:
         )
 
         entries = self._audit(tx)
-        self._validate_op_time()
+        self._validate_op_time(client_id)
         self._enforce_risk(tx, entries)
+        self._register(tx)
         self._execute_sync(tx)
         return tx
 
@@ -352,8 +425,9 @@ class Bank:
         )
 
         entries = self._audit(tx)
-        self._validate_op_time()
+        self._validate_op_time(client_id)
         self._enforce_risk(tx, entries)
+        self._register(tx)
         self._execute_sync(tx)
         return tx
 
@@ -391,9 +465,11 @@ class Bank:
             scheduled_at=now,
         )
         entries = self._audit(tx)
-        self._validate_op_time()
+        self._validate_op_time(client_id)
         self._enforce_risk(tx, entries)
         self._queue.add(tx, TransactionPriority.MEDIUM)
+        self._register(tx)
+        self._emit(BankEventKind.QUEUED, client_id=client_id, tx=tx)
         return tx
 
     @validate_call
@@ -405,6 +481,7 @@ class Bank:
         if tx is None or tx.from_client_id != client_id:
             return False
         self._queue.cancel(tx_id)
+        self._emit(BankEventKind.CANCELLED, client_id=client_id, tx=tx)
         return True
 
     def run_transactions(self) -> list[Transaction]:
@@ -413,13 +490,24 @@ class Bank:
         for tx in processed:
             if tx.status is TransactionStatus.COMPLETED:
                 self._record_operation(tx)
+                self._emit(
+                    BankEventKind.COMPLETED,
+                    client_id=self._initiator(tx),
+                    tx=tx,
+                )
             elif tx.status is TransactionStatus.FAILED:
                 self._record_error(tx)
+                self._emit(
+                    BankEventKind.FAILED,
+                    client_id=self._initiator(tx),
+                    tx=tx,
+                    reason=tx.fail_reason,
+                )
         return processed
 
     @validate_call
     def close_account(self, client_id: UUID, account_id: AccountId) -> None:
-        self._validate_op_time()
+        self._validate_op_time(client_id)
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
@@ -430,7 +518,7 @@ class Bank:
 
     @validate_call
     def freeze_account(self, client_id: UUID, account_id: AccountId) -> None:
-        self._validate_op_time()
+        self._validate_op_time(client_id)
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
@@ -438,7 +526,7 @@ class Bank:
 
     @validate_call
     def unfreeze_account(self, client_id: UUID, account_id: AccountId) -> None:
-        self._validate_op_time()
+        self._validate_op_time(client_id)
         self._validate_client_status(client_id)
         self._validate_auth(client_id)
 
@@ -446,6 +534,11 @@ class Bank:
 
     def _validate_auth(self, client_id: UUID | None) -> None:
         if client_id not in self._authenticated:
+            self._emit(
+                BankEventKind.REJECTED,
+                client_id=client_id,
+                reason="authentication failed",
+            )
             raise AuthenticationError("Operation is not permitted")
 
     @validate_call
@@ -528,3 +621,63 @@ class Bank:
 
     def get_error_stats(self) -> dict[str, int]:
         return dict(self._error_stats)
+
+    def get_client_accounts(self, client_id: UUID) -> list[AccountInfo]:
+        """All accounts owned by the client, including closed ones."""
+        self._require_client(client_id)
+        return [
+            account.get_account_info()
+            for account in self._accounts.values()
+            if account.user.id == client_id
+        ]
+
+    def get_client_transactions(self, client_id: UUID) -> list[Transaction]:
+        """Transactions where the client is sender or recipient."""
+        self._require_client(client_id)
+        return [
+            tx
+            for tx in self._transactions.values()
+            if client_id in (tx.from_client_id, tx.to_client_id)
+        ]
+
+    def get_client_history(self, client_id: UUID) -> list[LogEntry]:
+        """Audit entries related to the client, oldest first."""
+        self._require_client(client_id)
+        return self._audit_log.search_logs(client_id=client_id, sort="asc")
+
+    def get_suspicious_operations(
+        self, *, client_id: UUID | None = None
+    ) -> list[LogEntry]:
+        """Audit entries at MEDIUM severity or above, newest first."""
+        entries = self._audit_log.get_suspicious_operations()
+        if client_id is None:
+            return entries
+        self._require_client(client_id)
+        return [entry for entry in entries if client_id in entry.client_ids]
+
+    def get_events(
+        self,
+        *,
+        kind: BankEventKind | None = None,
+        client_id: UUID | None = None,
+        tx_id: UUID | None = None,
+    ) -> list[BankEvent]:
+        """Bank event journal, oldest first."""
+        return [
+            event
+            for event in self._events
+            if (kind is None or event.kind is kind)
+            and (client_id is None or event.client_id == client_id)
+            and (tx_id is None or event.tx_id == tx_id)
+        ]
+
+    def get_transaction_stats(self) -> dict[str, int]:
+        """Transaction counts by status plus rejected attempts."""
+        by_status = Counter(tx.status.value for tx in self._transactions.values())
+        rejected = sum(
+            1 for event in self._events if event.kind is BankEventKind.REJECTED
+        )
+        stats = {status.value: by_status[status.value] for status in TransactionStatus}
+        stats["rejected"] = rejected
+        stats["total"] = len(self._transactions) + rejected
+        return stats
