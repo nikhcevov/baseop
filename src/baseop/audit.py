@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from baseop.clock import Clock, system_now
 from baseop.config import APP_TIMEZONE, convert, is_within_window
 from baseop.transaction import Transaction, TransactionType
 from baseop.uuid import AccountId
@@ -27,7 +28,7 @@ class LogEntry(BaseModel):
     client_ids: list[UUID]
     severity: AuditLogSeverity
     message: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(APP_TIMEZONE))
+    created_at: datetime = Field(default_factory=system_now)
     tags: list[str] = Field(default_factory=list)
 
 
@@ -101,7 +102,8 @@ class AuditLog:
 
 
 class RiscAnalyzer:
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Clock = system_now) -> None:
+        self._clock = clock
         self._SUSPICIOUS_TIME_START = time(0, tzinfo=APP_TIMEZONE)
         self._SUSPICIOUS_TIME_END = time(5, tzinfo=APP_TIMEZONE)
         self._RUB_TO_RISK_MAPPING = {
@@ -133,6 +135,7 @@ class RiscAnalyzer:
                     client_ids=[initiator_id],
                     message="Transaction amount in danger zone",
                     tags=["transaction_amount"],
+                    created_at=self._clock(),
                 )
 
     def _check_frequent_operations(
@@ -154,6 +157,7 @@ class RiscAnalyzer:
                     message="Operation count is suspicious",
                     tags=["operation_count"],
                     client_ids=[client_id],
+                    created_at=self._clock(),
                 )
         return None
 
@@ -177,6 +181,7 @@ class RiscAnalyzer:
             message="Transfer to a new account",
             tags=["new_account"],
             client_ids=[tx.from_client_id],
+            created_at=self._clock(),
         )
 
     def _check_operation_time(self, tx: Transaction) -> LogEntry | None:
@@ -193,6 +198,7 @@ class RiscAnalyzer:
                 message="Operation time in danger zone",
                 tags=["operation_time"],
                 client_ids=[initiator_id],
+                created_at=self._clock(),
             )
 
     def audit_operation(

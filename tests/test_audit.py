@@ -15,31 +15,22 @@ from baseop.bank import (
     WorkingHoursError,
 )
 from baseop.client import Client, ClientStatus
+from baseop.clock import FrozenClock
 from baseop.transaction import Transaction, TransactionStatus, TransactionType
 
-
-class _DayDateTime:
-    @classmethod
-    def now(cls, _tz=None):
-        return datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-
-
-class _NightDateTime:
-    @classmethod
-    def now(cls, _tz=None):
-        return datetime(2026, 1, 1, 3, 0, tzinfo=UTC)
-
-
-class _MorningDateTime:
-    @classmethod
-    def now(cls, _tz=None):
-        return datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
+_DAY = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+_NIGHT = datetime(2026, 1, 1, 3, 0, tzinfo=UTC)
+_MORNING = datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
 
 
 @pytest.fixture
-def bank(monkeypatch) -> Bank:
-    monkeypatch.setattr("baseop.bank.datetime", _DayDateTime)
-    return Bank()
+def clock() -> FrozenClock:
+    return FrozenClock(_DAY)
+
+
+@pytest.fixture
+def bank(clock: FrozenClock) -> Bank:
+    return Bank(clock=clock)
 
 
 @pytest.fixture
@@ -374,11 +365,10 @@ def test_error_stats_count_failed_queued_transfer(bank: Bank, client: Client) ->
 
 
 def test_night_attempt_is_recorded_and_refused(
-    bank: Bank, client: Client, monkeypatch
+    bank: Bank, client: Client, clock: FrozenClock
 ) -> None:
     account_id = _open_account(bank, client)
-    monkeypatch.setattr("baseop.bank.datetime", _NightDateTime)
-    monkeypatch.setattr("baseop.transaction.datetime", _NightDateTime)
+    clock.set(_NIGHT)
 
     with pytest.raises(WorkingHoursError):
         bank.deposit(client.id, account_id, 100)
@@ -392,11 +382,10 @@ def test_night_attempt_is_recorded_and_refused(
 
 
 def test_morning_operation_is_not_flagged(
-    bank: Bank, client: Client, monkeypatch
+    bank: Bank, client: Client, clock: FrozenClock
 ) -> None:
     account_id = _open_account(bank, client)
-    monkeypatch.setattr("baseop.bank.datetime", _MorningDateTime)
-    monkeypatch.setattr("baseop.transaction.datetime", _MorningDateTime)
+    clock.set(_MORNING)
 
     bank.deposit(client.id, account_id, 100)
 
@@ -407,11 +396,10 @@ def test_morning_operation_is_not_flagged(
 
 
 def test_night_high_amount_is_refused_by_hours(
-    bank: Bank, client: Client, monkeypatch
+    bank: Bank, client: Client, clock: FrozenClock
 ) -> None:
     account_id = _open_account(bank, client)
-    monkeypatch.setattr("baseop.bank.datetime", _NightDateTime)
-    monkeypatch.setattr("baseop.transaction.datetime", _NightDateTime)
+    clock.set(_NIGHT)
 
     with pytest.raises(WorkingHoursError):
         bank.deposit(client.id, account_id, 1_000_000)

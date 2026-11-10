@@ -17,19 +17,20 @@ from baseop.bank import (
     WorkingHoursError,
 )
 from baseop.client import Client, ClientStatus
+from baseop.clock import FrozenClock
 from baseop.transaction import TransactionStatus
 
-
-class _DayDateTime:
-    @classmethod
-    def now(cls, _tz=None):
-        return datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+_DAY = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture
-def bank(monkeypatch) -> Bank:
-    monkeypatch.setattr("baseop.bank.datetime", _DayDateTime)
-    return Bank()
+def clock() -> FrozenClock:
+    return FrozenClock(_DAY)
+
+
+@pytest.fixture
+def bank(clock: FrozenClock) -> Bank:
+    return Bank(clock=clock)
 
 
 @pytest.fixture
@@ -134,19 +135,13 @@ def test_account_operations_are_scoped_to_owner(bank: Bank):
 def test_working_hours_boundaries(
     bank: Bank,
     client: Client,
-    monkeypatch,
+    clock: FrozenClock,
     hour: int,
     minute: int,
     blocked: bool,
 ):
     account = bank.open_account(client.id, AccountKind.BANK)
-
-    class _Clock:
-        @classmethod
-        def now(cls, _tz=None):
-            return datetime(2026, 1, 1, hour, minute, tzinfo=UTC)
-
-    monkeypatch.setattr("baseop.bank.datetime", _Clock)
+    clock.set(datetime(2026, 1, 1, hour, minute, tzinfo=UTC))
 
     if blocked:
         with pytest.raises(WorkingHoursError):

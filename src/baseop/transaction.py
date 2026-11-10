@@ -14,7 +14,8 @@ from baseop.account import (
 )
 from baseop.account.base import AccountStatus
 from baseop.client import ClientStatus
-from baseop.config import APP_TIMEZONE, Currency, convert, round_money
+from baseop.clock import Clock, system_now
+from baseop.config import Currency, convert, round_money
 from baseop.uuid import AccountId
 
 
@@ -64,8 +65,8 @@ class Transaction(BaseModel):
     status: TransactionStatus = TransactionStatus.QUEUED
     errors: list[str] = Field(default_factory=list)
     attempts: int = 0
-    created_at: datetime = Field(default_factory=lambda: datetime.now(APP_TIMEZONE))
-    scheduled_at: datetime = Field(default_factory=lambda: datetime.now(APP_TIMEZONE))
+    created_at: datetime = Field(default_factory=system_now)
+    scheduled_at: datetime = Field(default_factory=system_now)
     finished_at: datetime | None = None
     _failure: BaseException | None = PrivateAttr(default=None)
 
@@ -111,24 +112,26 @@ class Transaction(BaseModel):
             and bool(self.external_destination)
         )
 
-    def complete(self) -> None:
+    def complete(self, *, at: datetime | None = None) -> None:
         if self.status != TransactionStatus.QUEUED:
             raise TransactionStatusError("Invalid transaction status")
         self.status = TransactionStatus.COMPLETED
-        self.finished_at = datetime.now(APP_TIMEZONE)
+        self.finished_at = system_now() if at is None else at
 
-    def cancel(self) -> None:
+    def cancel(self, *, at: datetime | None = None) -> None:
         if self.status != TransactionStatus.QUEUED:
             raise TransactionStatusError("Invalid transaction status")
         self.status = TransactionStatus.CANCELLED
-        self.finished_at = datetime.now(APP_TIMEZONE)
+        self.finished_at = system_now() if at is None else at
 
-    def fail(self, cause: BaseException | None = None) -> None:
+    def fail(
+        self, cause: BaseException | None = None, *, at: datetime | None = None
+    ) -> None:
         if self.status != TransactionStatus.QUEUED:
             raise TransactionStatusError("Invalid transaction status")
         self.status = TransactionStatus.FAILED
         self._failure = cause
-        self.finished_at = datetime.now(APP_TIMEZONE)
+        self.finished_at = system_now() if at is None else at
 
 
 class TransactionQueueInvalidStatusError(TransactionError):
@@ -146,7 +149,8 @@ class TransactionPriority(StrEnum):
 
 
 class TransactionQueue:
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Clock = system_now) -> None:
+        self._clock = clock
         self._queue: dict[TransactionPriority, list[Transaction]] = {
             priority: [] for priority in TransactionPriority
         }
@@ -179,7 +183,7 @@ class TransactionQueue:
                 (-1, None),
             )
             if transaction and transaction.status == TransactionStatus.QUEUED:
-                transaction.cancel()
+                transaction.cancel(at=self._clock())
                 queue.pop(idx)
                 return
         if not transaction:
@@ -199,7 +203,7 @@ class TransactionQueue:
                 (
                     (idx, tx)
                     for idx, tx in enumerate(self._queue[priority])
-                    if datetime.now(APP_TIMEZONE) >= tx.scheduled_at
+                    if self._clock() >= tx.scheduled_at
                     and tx.status == TransactionStatus.QUEUED
                 ),
                 (-1, None),
@@ -242,7 +246,10 @@ class TransactionProcessor:
         KeyError,
     )
 
-    def __init__(self, external_fee: float | None = None) -> None:
+    def __init__(
+        self, external_fee: float | None = None, *, clock: Clock = system_now
+    ) -> None:
+        self._clock = clock
         self._EXTERNAL_TRANSFER_FEE: float = (
             external_fee if external_fee is not None else 0.03
         )
@@ -271,20 +278,20 @@ class TransactionProcessor:
             except self._RETRYABLE_ERRORS as exc:
                 tx.errors.append(str(exc))
                 if tx.attempts == self._RETRY_COUNT:
-                    tx.fail(exc)
+                    tx.fail(exc, at=self._clock())
                     return tx
                 continue
             except self._TERMINAL_ERRORS as exc:
                 tx.errors.append(str(exc))
-                tx.fail(exc)
+                tx.fail(exc, at=self._clock())
                 return tx
 
-            tx.complete()
+            tx.complete(at=self._clock())
             return tx
 
         message = "max retry count exceeded"
         tx.errors.append(message)
-        tx.fail()
+        tx.fail(at=self._clock())
         return tx
 
     def _account(

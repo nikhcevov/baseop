@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import datetime, time
+from datetime import time
 from enum import StrEnum
 from math import isclose
 from typing import Annotated, TypedDict
@@ -19,6 +19,7 @@ from baseop.account import (
 )
 from baseop.audit import AuditLog, AuditLogSeverity, LogEntry, RiscAnalyzer
 from baseop.client import Client, ClientRisk, ClientStatus
+from baseop.clock import Clock, system_now
 from baseop.config import APP_TIMEZONE, Currency, is_within_window
 from baseop.transaction import (
     Transaction,
@@ -102,7 +103,8 @@ _HIGH_RISK_BLOCK_LIMIT = 3
 
 
 class Bank:
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Clock = system_now) -> None:
+        self._clock = clock
         self._clients: dict[UUID, Client] = {}
         self._accounts: dict[AccountId, AbstractAccount] = {}
         self._account_kind: dict[AccountId, AccountKind] = {}
@@ -110,15 +112,15 @@ class Bank:
         """Keep creds as strings, its intentional simplifying"""
         self._authenticated: set[UUID] = set()
         self._auth_tries: dict[UUID, int] = {}
-        self._queue = TransactionQueue()
-        self._processor = TransactionProcessor()
+        self._queue = TransactionQueue(clock=clock)
+        self._processor = TransactionProcessor(clock=clock)
         self._audit_log = AuditLog()
-        self._risk_analyzer = RiscAnalyzer()
+        self._risk_analyzer = RiscAnalyzer(clock=clock)
         self._error_stats: Counter[str] = Counter()
         self._high_risk_counts: Counter[UUID] = Counter()
 
     def _validate_op_time(self) -> None:
-        now = datetime.now(APP_TIMEZONE)
+        now = self._clock()
         if is_within_window(now, _CLOSED_FROM, _CLOSED_TO):
             raise WorkingHoursError("Bank is closed from 00:00 to 05:00")
 
@@ -171,6 +173,7 @@ class Bank:
                 message="Operation completed",
                 tags=["transaction"],
                 client_ids=self._affected_client_ids(tx),
+                created_at=self._clock(),
             )
         )
 
@@ -309,12 +312,15 @@ class Bank:
         self._validate_auth(client_id)
 
         account = self._require_own_account(client_id, account_id)
+        now = self._clock()
         tx = Transaction(
             type=TransactionType.DEPOSIT,
             amount=amount,
             currency=account.currency,
             to_client_id=client_id,
             to_account_id=account.account_id,
+            created_at=now,
+            scheduled_at=now,
         )
 
         entries = self._audit(tx)
@@ -334,12 +340,15 @@ class Bank:
         self._validate_auth(client_id)
 
         account = self._require_own_account(client_id, account_id)
+        now = self._clock()
         tx = Transaction(
             type=TransactionType.WITHDRAW,
             amount=amount,
             currency=account.currency,
             from_client_id=client_id,
             from_account_id=account.account_id,
+            created_at=now,
+            scheduled_at=now,
         )
 
         entries = self._audit(tx)
@@ -368,6 +377,7 @@ class Bank:
             if recipient is None:
                 raise AccountNotFoundError("Account not found")
 
+        now = self._clock()
         tx = Transaction(
             type=TransactionType.TRANSFER,
             amount=amount,
@@ -377,6 +387,8 @@ class Bank:
             to_account_id=recipient.account_id if recipient else None,
             to_client_id=recipient.user.id if recipient else None,
             external_destination=external_destination,
+            created_at=now,
+            scheduled_at=now,
         )
         entries = self._audit(tx)
         self._validate_op_time()
