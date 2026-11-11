@@ -120,6 +120,16 @@ _HIGH_RISK_BLOCK_LIMIT = 3
 """High severity findings a client may collect before being blocked"""
 
 
+class AccountSummary(TypedDict):
+    account_id: AccountId
+    client_id: UUID
+    kind: AccountKind
+    status: AccountStatus
+    balance: float
+    total_value: float
+    currency: Currency
+
+
 class Bank:
     def __init__(self, *, clock: Clock = system_now) -> None:
         self._clock = clock
@@ -681,3 +691,30 @@ class Bank:
         stats["rejected"] = rejected
         stats["total"] = len(self._transactions) + rejected
         return stats
+
+    def get_client(self, client_id: UUID) -> Client | None:
+        "Returns client, service method for reports, access control out of scope"
+        return self._clients.get(client_id)
+
+    def get_clients(self) -> list[Client]:
+        "Returns clients, service method for reports, access control out of scope"
+        return list(self._clients.values())
+
+    def get_transactions(self) -> list[Transaction]:
+        "Returns transactions, service method for reports, access control out of scope"
+        return list(self._transactions.values())
+
+    def get_account_summaries(self) -> list[AccountSummary]:
+        "Returns account summaries, service method for reports, access control out of scope"
+        return [
+            {
+                "account_id": account.account_id,
+                "client_id": account.user.id,
+                "kind": self._account_kind[account.account_id],
+                "status": account.account_status,
+                "balance": account.balance,
+                "total_value": account.total_value,
+                "currency": account.currency,
+            }
+            for account in self._accounts.values()
+        ]
