@@ -1,15 +1,15 @@
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 from uuid import UUID
 
-from baseop.bank import Bank
+from baseop.audit import AuditLogSeverity
+from baseop.bank import AccountKind, Bank
 from baseop.clock import Clock, system_now
 from baseop.transaction import TransactionType
 
-
-class ReportRow(TypedDict, extra_items=Any):
-    section: str
+ReportRow = dict[str, Any]
 
 
 ReportType = Literal["client", "risk", "bank"]
@@ -32,7 +32,7 @@ class ReportBuilder:
     ):
         self._bank = bank
         self._output_dir = Path(output_dir)
-        self._clock = system_now
+        self._clock = clock
 
     def report_template(self, name: str, type: ReportType) -> Report:
         return {"type": type, "title": name, "created_at": self._clock(), "rows": []}
@@ -66,7 +66,7 @@ class ReportBuilder:
             if account.get("client_id") == client.id
         ]
 
-        report["rows"].append(*accounts)
+        report["rows"].extend(accounts)
 
         transactions: list[ReportRow] = [
             {
@@ -77,8 +77,10 @@ class ReportBuilder:
                 "created_at": str(tx.created_at),
             }
             for tx in self._bank.get_transactions()
-            if (tx.type == TransactionType.DEPOSIT and tx.to_account_id == client.id)
+            if (tx.type == TransactionType.WITHDRAW and tx.from_client_id == client.id)
+            if (tx.type == TransactionType.DEPOSIT and tx.to_client_id == client.id)
             or (tx.from_client_id == client.id)
+            or (tx.to_client_id == client.id)
         ]
 
         report["rows"].append(*transactions)
@@ -93,20 +95,150 @@ class ReportBuilder:
 
         return report
 
-    def bank_report(self) -> dict: ...
-    def risk_report(self) -> dict: ...
+    def bank_report(self) -> Report:
+        report: Report = self.report_template("Bank report", "bank")
+        clients = self._bank.get_clients()
+        accounts = self._bank.get_account_summaries()
+        ranking = self._bank.get_clients_ranking()
+        stats = self._bank.get_transaction_stats()
+        errors = self._bank.get_error_stats()
+
+        report["rows"].append(
+            {
+                "section": "Summary",
+                "clients": len(clients),
+                "accounts": len(accounts),
+                "total_balance": self._bank.get_total_balance(),
+                "transactions": stats["total"],
+                "rejected": stats["rejected"],
+            }
+        )
+
+        clients_by_id = {client.id: client for client in clients}
+        for client_id, balance in ranking.items():
+            client = clients_by_id[client_id]
+            report["rows"].append(
+                {
+                    "section": "Clients",
+                    "client": f"{client.first_name} {client.last_name}",
+                    "status": client.status,
+                    "risk_profile": client.risk_profile or "None",
+                    "suspicious": client.suspicious,
+                    "total_balance": balance,
+                }
+            )
+
+        kind_counts: Counter[AccountKind] = Counter()
+        kind_balances: dict[AccountKind, float] = {}
+        for account in accounts:
+            kind = account["kind"]
+            kind_counts[kind] += 1
+            kind_balances[kind] = kind_balances.get(kind, 0.0) + account["total_value"]
+
+        for kind in AccountKind:
+            report["rows"].append(
+                {
+                    "section": "Accounts by kind",
+                    "kind": kind,
+                    "accounts": kind_counts[kind],
+                    "total_value": kind_balances.get(kind, 0.0),
+                }
+            )
+
+        for name, value in stats.items():
+            report["rows"].append(
+                {
+                    "section": "Transaction stats",
+                    "metric": name,
+                    "value": value,
+                }
+            )
+
+        for name, value in errors.items():
+            report["rows"].append(
+                {"section": "Error stats", "metric": name, "value": value}
+            )
+
+        return report
+
+    def risk_report(self) -> Report:
+        report: Report = self.report_template("Risk report", "risk")
+        clients = self._bank.get_clients()
+        profiles = [
+            (client, self._bank.get_client_risk_profile(client.id))
+            for client in clients
+        ]
+
+        findings_by_severity: Counter[AuditLogSeverity] = Counter()
+        for _, profile in profiles:
+            findings_by_severity.update(profile["findings"])
+
+        profile_counts = Counter(client.risk_profile or "UNRATED" for client in clients)
+
+        report["rows"].append(
+            {
+                "section": "Summary",
+                "clients": len(clients),
+                "suspicious_clients": sum(1 for client in clients if client.suspicious),
+                "high_risk": profile_counts["HIGH"],
+                "medium_risk": profile_counts["MEDIUM"],
+                "low_risk": profile_counts["LOW"],
+                "unrated": profile_counts["UNRATED"],
+                "low_findings": findings_by_severity[AuditLogSeverity.LOW],
+                "medium_findings": findings_by_severity[AuditLogSeverity.MEDIUM],
+                "high_findings": findings_by_severity[AuditLogSeverity.HIGH],
+            }
+        )
+
+        for client, profile in profiles:
+            findings = profile["findings"]
+            report["rows"].append(
+                {
+                    "section": "Clients",
+                    "client": f"{client.first_name} {client.last_name}",
+                    "status": client.status,
+                    "risk_profile": profile["risk_profile"] or "UNRATED",
+                    "suspicious": profile["suspicious"],
+                    "low": findings.get(AuditLogSeverity.LOW, 0),
+                    "medium": findings.get(AuditLogSeverity.MEDIUM, 0),
+                    "high": findings.get(AuditLogSeverity.HIGH, 0),
+                    "total_findings": sum(findings.values()),
+                }
+            )
+
+        names = {
+            client.id: f"{client.first_name} {client.last_name}" for client in clients
+        }
+        for entry in self._bank.get_suspicious_operations():
+            report["rows"].append(
+                {
+                    "section": "Suspicious operations",
+                    "created_at": str(entry.created_at),
+                    "severity": entry.severity.name,
+                    "clients": ", ".join(
+                        names.get(client_id, str(client_id))
+                        for client_id in entry.client_ids
+                    ),
+                    "message": entry.message,
+                    "tags": ", ".join(entry.tags),
+                }
+            )
+
+        return report
 
     def export_to_json(self, report: Report, path=None) -> Path: ...
     def export_to_csv(self, report: Report, path=None) -> Path: ...
     def export_to_text(self, report: Report, path=None) -> Path:
         rows_by_section: dict[str, list[str]] = {}
         for row in report.get("rows"):
-            section = row.get("section")
-            row_line = " | ".join(f"{key} = {value}" for key, value in row.items())
+            section = row["section"]
+            row_line = " | ".join(
+                f"{key} = {value}" for key, value in row.items() if key != "section"
+            )
             rows_by_section.setdefault(section, []).append(row_line)
 
         content = f"""
-        Client report: {report.get("title")}
+        {report.get("title")}
         Generated: {report.get("created_at")}
 
         {
