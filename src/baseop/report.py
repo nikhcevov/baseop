@@ -68,7 +68,10 @@ def _csv_value(value: object) -> object:
 
 class ReportBuilder:
     def __init__(
-        self, bank: Bank, output_dir: str = "reports", clock: Clock = system_now
+        self,
+        bank: Bank,
+        output_dir: str | Path = "reports",
+        clock: Clock = system_now,
     ):
         self._bank = bank
         self._output_dir = Path(output_dir)
