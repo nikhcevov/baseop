@@ -165,6 +165,52 @@ def test_bank_report_rows_and_charts(demo: Demo) -> None:
     assert plot["values"][-1] == 401_800.0
 
 
+def test_bank_report_converts_balances_to_rub() -> None:
+    clock = FrozenClock(DAY)
+    bank = Bank(clock=clock)
+    alice = bank.add_client(
+        first_name="Alice", last_name="Smith", age=30, secret="secret"
+    )
+    bob = bank.add_client(
+        first_name="Bob", last_name="Jones", age=40, secret="secret"
+    )
+    for client in (alice, bob):
+        bank.authenticate_client(client.id, "secret")
+
+    usd_account = bank.open_account(
+        alice.id, AccountKind.BANK, currency="USD"
+    )["account_id"]
+    rub_account = bank.open_account(
+        bob.id, AccountKind.BANK, currency="RUB"
+    )["account_id"]
+    bank.deposit(alice.id, usd_account, 100)
+    bank.deposit(bob.id, rub_account, 9_000)
+
+    report = ReportBuilder(bank, clock=clock).bank_report()
+
+    summary = _sections(report, "Summary")[0]
+    assert summary["total_balance"] == 18_000.0
+    assert {
+        row["client"]: row["total_balance"]
+        for row in _sections(report, "Clients")
+    } == {"Alice Smith": 9_000.0, "Bob Jones": 9_000.0}
+    assert {
+        row["kind"]: row["total_value"]
+        for row in _sections(report, "Accounts by kind")
+    }[AccountKind.BANK] == 18_000.0
+
+    charts = _charts(report)
+    assert charts["bank_balances_by_kind.png"]["values"] == [18_000.0]
+    assert dict(
+        zip(
+            charts["bank_top_clients.png"]["labels"],
+            charts["bank_top_clients.png"]["values"],
+            strict=True,
+        )
+    ) == {"Alice Smith": 9_000.0, "Bob Jones": 9_000.0}
+    assert charts["bank_balance_history.png"]["values"][-1] == 18_000.0
+
+
 def test_risk_report_rows_and_charts(demo: Demo) -> None:
     report = _builder(demo).risk_report()
     summary = _sections(report, "Summary")[0]

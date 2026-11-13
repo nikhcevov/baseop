@@ -20,7 +20,7 @@ from baseop.account import (
 from baseop.audit import AuditLog, AuditLogSeverity, LogEntry, RiscAnalyzer
 from baseop.client import Client, ClientRisk, ClientStatus
 from baseop.clock import Clock, system_now
-from baseop.config import APP_TIMEZONE, Currency, is_within_window
+from baseop.config import APP_TIMEZONE, Currency, convert, is_within_window
 from baseop.transaction import (
     Transaction,
     TransactionPriority,
@@ -592,20 +592,30 @@ class Bank:
             and (kind is None or self._account_kind[account.account_id] == kind)
         ]
 
-    def get_total_balance(self) -> float:
+    def get_total_balance(self, currency: Currency | None = None) -> float:
         return sum(
             account.total_value
+            if currency is None
+            else convert(account.total_value, account.currency, currency)
             for account in self._accounts.values()
             if account.account_status != AccountStatus.CLOSED
         )
 
-    def get_clients_ranking(self) -> dict[UUID, float]:
-        """Returns clients with balances dict, sorted by balance, DESC"""
+    def get_clients_ranking(
+        self, currency: Currency | None = None
+    ) -> dict[UUID, float]:
+        """Returns clients with balances, sorted DESC.
+
+        Balances stay in account currencies by default and are converted
+        when ``currency`` is provided.
+        """
         ranking = {}
 
         for client in self._clients.values():
             total_balance = sum(
                 account.total_value
+                if currency is None
+                else convert(account.total_value, account.currency, currency)
                 for account in self._accounts.values()
                 if account.user.id == client.id
                 and account.account_status != AccountStatus.CLOSED

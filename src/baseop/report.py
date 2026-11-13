@@ -115,6 +115,7 @@ class ReportBuilder:
                 "status": account.get("status"),
                 "currency": account.get("currency"),
                 "balance": account.get("balance"),
+                "total_value": account.get("total_value"),
             }
             for account in accounts
         ]
@@ -149,7 +150,7 @@ class ReportBuilder:
 
         balance_by_account_kind = defaultdict(float)
         for account in accounts:
-            balance = account.get("balance", 0.0)
+            balance = account.get("total_value", 0.0)
             currency = account.get("currency")
             balance_in_rub = convert(balance, currency, "RUB")
             balance_by_account_kind[account.get("kind")] += balance_in_rub
@@ -190,7 +191,7 @@ class ReportBuilder:
                 )
 
         starting_balance = sum(
-            convert(account.get("balance"), account.get("currency"), "RUB")
+            convert(account.get("total_value"), account.get("currency"), "RUB")
             for account in accounts
         ) - sum(total_balance_deltas)
 
@@ -219,7 +220,7 @@ class ReportBuilder:
         report: Report = self.report_template("Bank report", "bank")
         clients = self._bank.get_clients()
         accounts = self._bank.get_account_summaries()
-        ranking = self._bank.get_clients_ranking()
+        ranking = self._bank.get_clients_ranking(currency="RUB")
         transactions = self._bank.get_transactions()
         stats = self._bank.get_transaction_stats()
         errors = self._bank.get_error_stats()
@@ -229,7 +230,7 @@ class ReportBuilder:
                 "section": "Summary",
                 "clients": len(clients),
                 "accounts": len(accounts),
-                "total_balance": self._bank.get_total_balance(),
+                "total_balance": self._bank.get_total_balance(currency="RUB"),
                 "transactions": stats["total"],
                 "rejected": stats["rejected"],
             }
@@ -254,7 +255,9 @@ class ReportBuilder:
         for account in accounts:
             kind = account["kind"]
             kind_counts[kind] += 1
-            kind_balances[kind] = kind_balances.get(kind, 0.0) + account["total_value"]
+            kind_balances[kind] = kind_balances.get(kind, 0.0) + convert(
+                account["total_value"], account["currency"], "RUB"
+            )
 
         for kind in AccountKind:
             report["rows"].append(
@@ -486,12 +489,8 @@ class ReportBuilder:
         )
         return charts
 
-    def export_to_json(
-        self, report: Report, path: str | Path | None = None
-    ) -> Path:
-        target = Path(
-            path or self._output_dir / f"{report['type']}-report.json"
-        )
+    def export_to_json(self, report: Report, path: str | Path | None = None) -> Path:
+        target = Path(path or self._output_dir / f"{report['type']}-report.json")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(
@@ -505,9 +504,7 @@ class ReportBuilder:
         )
         return target
 
-    def export_to_csv(
-        self, report: Report, path: str | Path | None = None
-    ) -> Path:
+    def export_to_csv(self, report: Report, path: str | Path | None = None) -> Path:
         fieldnames: list[str] = ["section"]
         for row in report["rows"]:
             for key in row:
@@ -518,44 +515,35 @@ class ReportBuilder:
         writer = csv.DictWriter(buffer, fieldnames=fieldnames)
         writer.writeheader()
         for row in report["rows"]:
-            writer.writerow(
-                {
-                    key: _csv_value(row.get(key))
-                    for key in fieldnames
-                }
-            )
+            writer.writerow({key: _csv_value(row.get(key)) for key in fieldnames})
 
-        target = Path(
-            path or self._output_dir / f"{report['type']}-report.csv"
-        )
+        target = Path(path or self._output_dir / f"{report['type']}-report.csv")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(buffer.getvalue(), encoding="utf-8")
         return target
 
     def export_to_text(self, report: Report, path=None) -> Path:
-        rows_by_section: dict[str, list[str]] = {}
+
+        content = []
+        content.append(report["title"])
+        content.append(f"\nGenerated: {report.get('created_at')}")
+
+        current_section = ""
         for row in report.get("rows"):
             section = row["section"]
-            row_line = " | ".join(
+            if current_section != section:
+                content.append(f"\n\n{section}\n{'-' * len(section)}")
+                current_section = section
+
+            line = " | ".join(
                 f"{key} = {value}" for key, value in row.items() if key != "section"
             )
-            rows_by_section.setdefault(section, []).append(row_line)
-
-        content = f"""
-        {report.get("title")}
-        Generated: {report.get("created_at")}
-
-        {
-            "".join(
-                f"\n{section}\n{'-' * len(section)}\n{''.join(f'{line}\n' for line in lines)}"
-                for section, lines in rows_by_section.items()
-            )
-        }
-        """
+            content.append("\n")
+            content.append(line)
 
         target = Path(path or self._output_dir / f"{report.get('type')}-report.txt")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_text("".join(content), encoding="utf-8")
         return target
 
     def save_charts(self, report: Report, directory=None) -> list[Path]:
@@ -564,7 +552,8 @@ class ReportBuilder:
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
 
-        out = Path(directory or self._output_dir / "charts")
+        out = Path(directory or self._output_dir / f"{report.get('type')}-charts")
+
         out.mkdir(parents=True, exist_ok=True)
 
         paths: list[Path] = []

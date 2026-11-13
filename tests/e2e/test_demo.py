@@ -5,11 +5,12 @@ Run with output: ``pytest -s tests/e2e/test_demo.py``.
 Seven clients and twelve accounts are created through the public ``Bank``
 facade, then 42 operation attempts are executed one by one. No mocks and
 no wall clock: time comes from an injected ``FrozenClock``, so balances,
-audit counts and reports are identical on every run.
+audit counts, generated reports and charts are identical on every run.
 """
 
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -30,6 +31,7 @@ from baseop.bank import (
 )
 from baseop.client import ClientStatus
 from baseop.clock import FrozenClock
+from baseop.report import ReportBuilder
 from baseop.transaction import Transaction, TransactionStatus
 
 SECRET = "demo-secret"
@@ -43,7 +45,11 @@ def _settle(bank: Bank, tx: Transaction) -> None:
 
 
 def test_demo_scenario(
-    bank: Bank, clock: FrozenClock, day: datetime, night: datetime
+    bank: Bank,
+    clock: FrozenClock,
+    day: datetime,
+    night: datetime,
+    tmp_path: Path,
 ) -> None:
     # --- initialization: 7 clients -------------------------------------
     alice = bank.add_client(
@@ -399,3 +405,98 @@ def test_demo_scenario(
     )
     tags = Counter(tag for entry in logs for tag in entry.tags)
     print(f"    tags: {dict(sorted(tags.items()))}")
+
+    # --- generated reports and charts ------------------------------------
+    reports_dir = tmp_path / "reports"
+    builder = ReportBuilder(bank, output_dir=reports_dir, clock=clock)
+    client_report = builder.client_report(alice.id)
+    bank_report = builder.bank_report()
+    risk_report = builder.risk_report()
+    reports = (client_report, bank_report, risk_report)
+
+    report_files = [
+        builder.export_to_text(report)
+        for report in reports
+    ] + [
+        builder.export_to_json(report)
+        for report in reports
+    ] + [
+        builder.export_to_csv(report)
+        for report in reports
+    ]
+    chart_files = {
+        report["type"]: builder.save_charts(
+            report, reports_dir / f"{report['type']}-charts"
+        )
+        for report in reports
+    }
+
+    assert {path.name for path in report_files} == {
+        "client-report.txt",
+        "bank-report.txt",
+        "risk-report.txt",
+        "client-report.json",
+        "bank-report.json",
+        "risk-report.json",
+        "client-report.csv",
+        "bank-report.csv",
+        "risk-report.csv",
+    }
+    assert all(path.exists() and path.stat().st_size > 0 for path in report_files)
+    assert {kind: len(paths) for kind, paths in chart_files.items()} == {
+        "client": 3,
+        "bank": 3,
+        "risk": 2,
+    }
+    assert all(
+        path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+        for paths in chart_files.values()
+        for path in paths
+    )
+
+    client_accounts = [
+        row for row in client_report["rows"] if row["section"] == "Accounts"
+    ]
+    client_transactions = [
+        row for row in client_report["rows"] if row["section"] == "Transactions"
+    ]
+    client_plot = next(
+        chart
+        for chart in client_report["charts"]
+        if chart["filename"] == "balance_history.png"
+    )
+    bank_plot = next(
+        chart
+        for chart in bank_report["charts"]
+        if chart["filename"] == "bank_balance_history.png"
+    )
+    risk_pie = next(
+        chart
+        for chart in risk_report["charts"]
+        if chart["filename"] == "risk_profiles.png"
+    )
+    risk_bar = next(
+        chart
+        for chart in risk_report["charts"]
+        if chart["filename"] == "risk_findings_by_severity.png"
+    )
+
+    assert len(client_accounts) == len(alice_accounts) == 3
+    assert len(client_transactions) == len(alice_transactions) == 10
+    assert client_plot["values"][-1] == ranking["Alice"]
+    assert bank_plot["values"][-1] == bank.get_total_balance()
+    assert dict(zip(risk_pie["labels"], risk_pie["values"], strict=True)) == {
+        "HIGH": 2,
+        "MEDIUM": 5,
+    }
+    assert risk_bar["values"] == [0, 15, 4]
+
+    print()
+    print("[generated reports]")
+    for path in report_files:
+        print(f"  {path.relative_to(tmp_path)} ({path.stat().st_size} bytes)")
+    print("[generated charts]")
+    for kind, paths in chart_files.items():
+        print(f"  {kind}: {len(paths)} charts")
+        for path in paths:
+            print(f"    {path.relative_to(tmp_path)}")
