@@ -1,6 +1,10 @@
+import csv
+import io
+import json
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 from uuid import UUID
@@ -36,6 +40,30 @@ class Report(TypedDict):
 
 class ReportError(Exception):
     pass
+
+
+def _json_default(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return str(value.value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _csv_value(value: object) -> object:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, ensure_ascii=False, default=_json_default)
+    return value
 
 
 class ReportBuilder:
@@ -147,16 +175,12 @@ class ReportBuilder:
         )
         total_balance_deltas = []
         for tx in sorted_tx_by_time:
-            internal = (
-                tx.from_client_id == client.id and tx.to_client_id == client.id
-            )
+            internal = tx.from_client_id == client.id and tx.to_client_id == client.id
 
             if internal:
                 total_balance_deltas.append(0.0)
             elif tx.to_client_id == client.id:
-                total_balance_deltas.append(
-                    convert(tx.amount, tx.currency, "RUB")
-                )
+                total_balance_deltas.append(convert(tx.amount, tx.currency, "RUB"))
             else:
                 total_balance_deltas.append(
                     -convert(tx.amount + tx.fee, tx.currency, "RUB")
@@ -174,7 +198,9 @@ class ReportBuilder:
             balance += delta
             balance_history.append(balance)
 
-        tx_timestamps = [str(tx.finished_at or tx.created_at) for tx in sorted_tx_by_time]
+        tx_timestamps = [
+            str(tx.finished_at or tx.created_at) for tx in sorted_tx_by_time
+        ]
         client_balance_history_chart: Chart = {
             "type": "plot",
             "title": "Balance history",
@@ -251,9 +277,7 @@ class ReportBuilder:
                 {"section": "Error stats", "metric": name, "value": value}
             )
 
-        report["charts"].extend(
-            self._bank_charts(clients, accounts, transactions)
-        )
+        report["charts"].extend(self._bank_charts(clients, accounts, transactions))
         return report
 
     def risk_report(self) -> Report:
@@ -319,9 +343,7 @@ class ReportBuilder:
                 }
             )
 
-        report["charts"].extend(
-            self._risk_charts(clients, findings_by_severity)
-        )
+        report["charts"].extend(self._risk_charts(clients, findings_by_severity))
         return report
 
     def _bank_charts(
@@ -338,9 +360,7 @@ class ReportBuilder:
                 account["total_value"], account["currency"], "RUB"
             )
         kind_items = [
-            (kind, value)
-            for kind, value in balances_by_kind.items()
-            if value > 0
+            (kind, value) for kind, value in balances_by_kind.items() if value > 0
         ]
         if kind_items:
             charts.append(
@@ -359,8 +379,7 @@ class ReportBuilder:
                 account["total_value"], account["currency"], "RUB"
             )
         names = {
-            client.id: f"{client.first_name} {client.last_name}"
-            for client in clients
+            client.id: f"{client.first_name} {client.last_name}" for client in clients
         }
         top_clients = sorted(
             balances_by_client.items(),
@@ -386,11 +405,7 @@ class ReportBuilder:
             for account in accounts
         )
         completed = sorted(
-            (
-                tx
-                for tx in transactions
-                if tx.status is TransactionStatus.COMPLETED
-            ),
+            (tx for tx in transactions if tx.status is TransactionStatus.COMPLETED),
             key=lambda tx: tx.finished_at or tx.created_at,
         )
         deltas = [self._bank_delta(tx) for tx in completed]
@@ -432,9 +447,7 @@ class ReportBuilder:
     ) -> list[Chart]:
         charts: list[Chart] = []
 
-        profile_counts = Counter(
-            client.risk_profile or "UNRATED" for client in clients
-        )
+        profile_counts = Counter(client.risk_profile or "UNRATED" for client in clients)
         profile_items = [
             (label, profile_counts[label])
             for label in ("HIGH", "MEDIUM", "LOW", "UNRATED")
@@ -470,8 +483,52 @@ class ReportBuilder:
         )
         return charts
 
-    def export_to_json(self, report: Report, path=None) -> Path: ...
-    def export_to_csv(self, report: Report, path=None) -> Path: ...
+    def export_to_json(
+        self, report: Report, path: str | Path | None = None
+    ) -> Path:
+        target = Path(
+            path or self._output_dir / f"{report['type']}-report.json"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(
+                report,
+                ensure_ascii=False,
+                indent=2,
+                default=_json_default,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return target
+
+    def export_to_csv(
+        self, report: Report, path: str | Path | None = None
+    ) -> Path:
+        fieldnames: list[str] = ["section"]
+        for row in report["rows"]:
+            for key in row:
+                if key not in fieldnames:
+                    fieldnames.append(key)
+
+        buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in report["rows"]:
+            writer.writerow(
+                {
+                    key: _csv_value(row.get(key))
+                    for key in fieldnames
+                }
+            )
+
+        target = Path(
+            path or self._output_dir / f"{report['type']}-report.csv"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(buffer.getvalue(), encoding="utf-8")
+        return target
+
     def export_to_text(self, report: Report, path=None) -> Path:
         rows_by_section: dict[str, list[str]] = {}
         for row in report.get("rows"):
@@ -498,4 +555,50 @@ class ReportBuilder:
         target.write_text(content, encoding="utf-8")
         return target
 
-    def save_charts(self, report: Report, directory=None) -> list[Path]: ...
+    def save_charts(self, report: Report, directory=None) -> list[Path]:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+
+        out = Path(directory or self._output_dir / "charts")
+        out.mkdir(parents=True, exist_ok=True)
+
+        paths: list[Path] = []
+
+        for chart in report["charts"]:
+            fig, ax = plt.subplots(figsize=(8, 5))
+            try:
+                if chart["type"] == "pie":
+                    if not chart["values"] or sum(chart["values"]) == 0:
+                        continue
+                    ax.pie(
+                        chart["values"],
+                        labels=chart["labels"],
+                        autopct="%1.1f%%",
+                        startangle=90,
+                    )
+                    ax.axis("equal")
+                elif chart["type"] == "bar":
+                    ax.bar(chart["labels"], chart["values"])
+                    ax.grid(axis="y", alpha=0.3)
+                    ax.tick_params(axis="x", labelrotation=45, labelsize=8)
+                else:
+                    positions = range(len(chart["values"]))
+                    ax.plot(positions, chart["values"], marker="o", linewidth=2)
+                    ax.set_xticks(list(positions))
+                    ax.set_xticklabels(
+                        chart["labels"], rotation=45, ha="right", fontsize=8
+                    )
+                    ax.grid(True, alpha=0.3)
+
+                ax.set_title(chart["title"])
+                fig.tight_layout()
+                path = out / chart["filename"]
+                fig.savefig(path, dpi=150)
+                paths.append(path)
+
+            finally:
+                plt.close(fig)
+
+        return paths
