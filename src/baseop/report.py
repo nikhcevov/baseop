@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -7,7 +7,8 @@ from uuid import UUID
 from baseop.audit import AuditLogSeverity
 from baseop.bank import AccountKind, Bank
 from baseop.clock import Clock, system_now
-from baseop.transaction import TransactionType
+from baseop.config import convert
+from baseop.transaction import TransactionStatus
 
 ReportRow = dict[str, Any]
 
@@ -15,11 +16,20 @@ ReportRow = dict[str, Any]
 ReportType = Literal["client", "risk", "bank"]
 
 
+class Chart(TypedDict):
+    type: Literal["pie", "bar", "plot"]
+    title: str
+    filename: str
+    labels: list[str]
+    values: list[float | int]
+
+
 class Report(TypedDict):
     type: ReportType
     title: str
     created_at: datetime
     rows: list[ReportRow]
+    charts: list[Chart]
 
 
 class ReportError(Exception):
@@ -35,7 +45,13 @@ class ReportBuilder:
         self._clock = clock
 
     def report_template(self, name: str, type: ReportType) -> Report:
-        return {"type": type, "title": name, "created_at": self._clock(), "rows": []}
+        return {
+            "type": type,
+            "title": name,
+            "created_at": self._clock(),
+            "rows": [],
+            "charts": [],
+        }
 
     def client_report(self, client_id: UUID) -> Report:
         client = self._bank.get_client(client_id)
@@ -53,7 +69,12 @@ class ReportBuilder:
             }
         )
 
-        accounts: list[ReportRow] = [
+        accounts = [
+            account
+            for account in self._bank.get_account_summaries()
+            if account.get("client_id") == client.id
+        ]
+        account_rows: list[ReportRow] = [
             {
                 "section": "Accounts",
                 "account_id": account.get("account_id"),
@@ -62,13 +83,17 @@ class ReportBuilder:
                 "currency": account.get("currency"),
                 "balance": account.get("balance"),
             }
-            for account in self._bank.get_account_summaries()
-            if account.get("client_id") == client.id
+            for account in accounts
         ]
 
-        report["rows"].extend(accounts)
+        report["rows"].extend(account_rows)
 
-        transactions: list[ReportRow] = [
+        transactions = [
+            tx
+            for tx in self._bank.get_transactions()
+            if (tx.from_client_id == client.id) or (tx.to_client_id == client.id)
+        ]
+        transaction_rows: list[ReportRow] = [
             {
                 "section": "Transactions",
                 "id": str(tx.id),
@@ -76,14 +101,10 @@ class ReportBuilder:
                 "status": str(tx.status),
                 "created_at": str(tx.created_at),
             }
-            for tx in self._bank.get_transactions()
-            if (tx.type == TransactionType.WITHDRAW and tx.from_client_id == client.id)
-            if (tx.type == TransactionType.DEPOSIT and tx.to_client_id == client.id)
-            or (tx.from_client_id == client.id)
-            or (tx.to_client_id == client.id)
+            for tx in transactions
         ]
 
-        report["rows"].append(*transactions)
+        report["rows"].extend(transaction_rows)
 
         report["rows"].append(
             {
@@ -92,6 +113,74 @@ class ReportBuilder:
                 "suspicious": client.suspicious,
             }
         )
+
+        balance_by_account_kind = defaultdict(float)
+        for account in accounts:
+            balance = account.get("balance", 0.0)
+            currency = account.get("currency")
+            balance_in_rub = convert(balance, currency, "RUB")
+            balance_by_account_kind[account.get("kind")] += balance_in_rub
+        account_types_chart: Chart = {
+            "type": "pie",
+            "title": "Balances by account type",
+            "filename": "account_types.png",
+            "labels": list(balance_by_account_kind.keys()),
+            "values": list(balance_by_account_kind.values()),
+        }
+        report["charts"].append(account_types_chart)
+
+        tx_type_count = Counter(tx.type for tx in transactions)
+        tx_types_chart: Chart = {
+            "type": "bar",
+            "title": "Transaction count by transaction type",
+            "filename": "transaction_types.png",
+            "labels": list(tx_type_count.keys()),
+            "values": list(tx_type_count.values()),
+        }
+        report["charts"].append(tx_types_chart)
+
+        sorted_tx_by_time = sorted(
+            (tx for tx in transactions if tx.status is TransactionStatus.COMPLETED),
+            key=lambda x: x.finished_at or x.created_at,
+        )
+        total_balance_deltas = []
+        for tx in sorted_tx_by_time:
+            internal = (
+                tx.from_client_id == client.id and tx.to_client_id == client.id
+            )
+
+            if internal:
+                total_balance_deltas.append(0.0)
+            elif tx.to_client_id == client.id:
+                total_balance_deltas.append(
+                    convert(tx.amount, tx.currency, "RUB")
+                )
+            else:
+                total_balance_deltas.append(
+                    -convert(tx.amount + tx.fee, tx.currency, "RUB")
+                )
+
+        starting_balance = sum(
+            convert(account.get("balance"), account.get("currency"), "RUB")
+            for account in accounts
+        ) - sum(total_balance_deltas)
+
+        balance = starting_balance
+        balance_history = [balance]
+
+        for delta in total_balance_deltas:
+            balance += delta
+            balance_history.append(balance)
+
+        tx_timestamps = [str(tx.finished_at or tx.created_at) for tx in sorted_tx_by_time]
+        client_balance_history_chart: Chart = {
+            "type": "plot",
+            "title": "Balance history",
+            "filename": "balance_history.png",
+            "labels": ["start", *tx_timestamps],
+            "values": balance_history,
+        }
+        report["charts"].append(client_balance_history_chart)
 
         return report
 
